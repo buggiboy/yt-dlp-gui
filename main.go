@@ -6,6 +6,8 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:frontend/dist
@@ -23,10 +25,23 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
+		// Fully transparent: the OS translucency effects below show through,
+		// and the CSS paints a semi-transparent dark gray on top.
+		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		OnStartup:        app.startup,
 		Bind: []interface{}{
 			app,
+		},
+		Windows: &windows.Options{
+			WindowIsTranslucent: true,
+			// Acrylic is the classic frosted-glass blur. windows.Mica is the
+			// subtler Windows 11 desktop-tinted alternative if you prefer it.
+			BackdropType: windows.Acrylic,
+		},
+		Mac: &mac.Options{
+			WindowIsTranslucent: true,
+			// Force dark appearance so the native titlebar/controls match the theme.
+			Appearance: mac.NSAppearanceNameDarkAqua,
 		},
 	})
 

@@ -1,15 +1,26 @@
 html {
-    background-color: rgba(27, 38, 54, 1);
+    /* Tells the webview engine to render native form controls (buttons,
+       checkboxes, inputs) in their dark variants on both macOS and Windows. */
+    color-scheme: dark;
+    /* Semi-transparent dark gray: the OS blur effect (Acrylic on Windows,
+       translucent window on macOS) shows through from behind. */
+    background-color: rgba(44, 44, 46, 0.65);
     text-align: center;
-    color: white;
+    color: #ededed;
 }
 
 body {
     margin: 0;
-    color: white;
+    color: #ededed;
     font-family: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
     "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
     sans-serif;
+}
+
+/* Native controls should use the OS font, not Nunito, to look right. */
+button,
+input[type="checkbox"] {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
 @font-face {

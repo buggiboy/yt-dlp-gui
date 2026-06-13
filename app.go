@@ -6,7 +6,8 @@ import (
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx         context.Context
+	previewPort int
 }
 
 // NewApp creates a new App application struct
@@ -18,4 +19,7 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// Best-effort: if this fails, previewPort stays 0 and the UI simply
+	// doesn't show the preview. Downloads are unaffected.
+	_ = a.startPreviewServer()
 }

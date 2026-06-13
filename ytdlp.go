@@ -2,19 +2,17 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	// The Wails runtime package is also named "runtime", so we alias it to
-	// avoid clashing with Go's standard library "runtime" used above.
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -33,37 +31,27 @@ type DownloadProgress struct {
 	Eta     string  `json:"eta"`
 }
 
-// ytDlpAssetName returns the correct yt-dlp release asset filename for the
-// current operating system and CPU architecture. yt-dlp publishes a separate
-// standalone binary per platform on its GitHub releases page.
-func ytDlpAssetName() string {
-	switch runtime.GOOS {
-	case "windows":
-		return "yt-dlp.exe"
-	case "darwin":
-		// The _macos build is a universal binary (works on Intel + Apple Silicon).
-		return "yt-dlp_macos"
-	default: // linux and others
-		if runtime.GOARCH == "arm64" {
-			return "yt-dlp_linux_aarch64"
-		}
-		return "yt-dlp_linux"
-	}
-}
+// timestampRe accepts plain seconds ("90", "90.5") or clock-style stamps
+// ("1:30", "01:02:30", "1:02:30.5").
+var timestampRe = regexp.MustCompile(`^(\d+(\.\d+)?|(\d+:)?[0-5]?\d:[0-5]\d(\.\d+)?)$`)
 
-// ytDlpPath returns the full path where we store the managed yt-dlp binary.
-// We keep it in the OS user-config dir (e.g. ~/Library/Application Support on
-// macOS) under our app's folder, so each user has their own copy.
-func ytDlpPath() (string, error) {
-	cfgDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+// parseTimestamp converts a user-entered timestamp to seconds.
+// Accepts "SS", "MM:SS", or "HH:MM:SS" (fractions allowed on the last part).
+func parseTimestamp(ts string) (float64, error) {
+	ts = strings.TrimSpace(ts)
+	if !timestampRe.MatchString(ts) {
+		return 0, fmt.Errorf("invalid timestamp %q — use seconds (90), MM:SS (1:30), or HH:MM:SS (1:02:30)", ts)
 	}
-	name := "yt-dlp"
-	if runtime.GOOS == "windows" {
-		name = "yt-dlp.exe"
+	parts := strings.Split(ts, ":")
+	var total float64
+	for _, p := range parts {
+		v, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid timestamp %q", ts)
+		}
+		total = total*60 + v
 	}
-	return filepath.Join(cfgDir, "ytpgui", name), nil
+	return total, nil
 }
 
 // downloadsDir returns the current user's Downloads folder.
@@ -75,84 +63,155 @@ func downloadsDir() (string, error) {
 	return filepath.Join(home, "Downloads"), nil
 }
 
-// YtDlpInstalled reports whether the managed yt-dlp binary is present on disk.
-// Bound to the frontend so the UI can show install state.
+// YtDlpInstalled reports whether the app's Python runtime and the yt-dlp zipapp
+// are both present. Bound to the frontend so the UI can show install state.
 func (a *App) YtDlpInstalled() bool {
-	p, err := ytDlpPath()
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(p)
-	return err == nil && !info.IsDir()
+	return runtimeReady()
 }
 
-// InstallYtDlp downloads the latest yt-dlp binary for this platform from the
-// official GitHub releases and makes it executable. Returns the version string
-// on success. Bound to the frontend "Download latest yt-dlp" button.
+// InstallYtDlp downloads whatever's missing — the standalone Python interpreter
+// and/or the yt-dlp zipapp — into the app's folder, reporting progress to the
+// frontend, then returns the yt-dlp version. Bound to the frontend
+// "Download latest yt-dlp" button.
 func (a *App) InstallYtDlp() (string, error) {
-	p, err := ytDlpPath()
-	if err != nil {
+	if err := a.ensureRuntime(); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", fmt.Errorf("could not create app folder: %w", err)
-	}
-
-	url := "https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + ytDlpAssetName()
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed: server returned %s", resp.Status)
-	}
-
-	// Write to a temp file first, then atomically rename into place so a failed
-	// download never leaves a half-written binary.
-	tmp := p + ".tmp"
-	out, err := os.Create(tmp)
-	if err != nil {
-		return "", err
-	}
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return "", err
-	}
-	out.Close()
-
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		os.Remove(tmp)
-		return "", err
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		os.Remove(tmp)
-		return "", err
-	}
-
 	return a.YtDlpVersion()
 }
 
-// YtDlpVersion runs `yt-dlp --version` and returns the trimmed output.
+// YtDlpVersion runs yt-dlp's --version through our bundled interpreter.
 func (a *App) YtDlpVersion() (string, error) {
-	p, err := ytDlpPath()
+	cmd, err := ytDlpCmd("--version")
 	if err != nil {
 		return "", err
 	}
-	out, err := exec.Command(p, "--version").Output()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("could not run yt-dlp: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
+// VideoFormat describes one selectable resolution: the height plus the
+// container extension (mp4, webm, …) of the best format at that height.
+type VideoFormat struct {
+	Height int    `json:"height"`
+	Ext    string `json:"ext"`
+}
+
+// FormatList is ListFormats' response: distinct video heights sorted high→low
+// with their container, plus the container of the best audio-only format.
+type FormatList struct {
+	Videos   []VideoFormat `json:"videos"`
+	AudioExt string        `json:"audioExt"`
+}
+
+// ListFormats asks yt-dlp (metadata only, no download) which formats are
+// actually available for a URL. The frontend uses this to narrow its preset
+// quality dropdown to what the video really offers. Bound to the frontend.
+func (a *App) ListFormats(rawURL string) (FormatList, error) {
+	var list FormatList
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return list, fmt.Errorf("empty URL")
+	}
+	if !runtimeReady() {
+		return list, fmt.Errorf("yt-dlp is not installed yet")
+	}
+
+	cmd, err := ytDlpCmd("--dump-json", "--no-playlist", "--playlist-items", "1", "--no-warnings", rawURL)
+	if err != nil {
+		return list, err
+	}
+	// Metadata extraction should be quick; kill it if a site makes it crawl.
+	timer := time.AfterFunc(30*time.Second, func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill() //nolint:errcheck
+		}
+	})
+	defer timer.Stop()
+
+	out, err := cmd.Output()
+	if err != nil {
+		return list, fmt.Errorf("could not read formats: %w", err)
+	}
+
+	var meta struct {
+		Formats []struct {
+			Vcodec string `json:"vcodec"`
+			Acodec string `json:"acodec"`
+			Height int    `json:"height"`
+			Ext    string `json:"ext"`
+		} `json:"formats"`
+	}
+	if err := json.Unmarshal(out, &meta); err != nil {
+		return list, fmt.Errorf("could not parse format list: %w", err)
+	}
+
+	// yt-dlp lists formats worst→best, so for each height the LAST format we
+	// see is the best one — letting later entries overwrite earlier ones means
+	// we end up with the ext of the best format at each height.
+	extByHeight := map[int]string{}
+	for _, f := range meta.Formats {
+		if f.Vcodec != "none" && f.Height > 0 {
+			extByHeight[f.Height] = f.Ext
+		} else if f.Vcodec == "none" && f.Acodec != "none" && f.Ext != "" {
+			list.AudioExt = f.Ext // audio-only: keep the last (= best) ext
+		}
+	}
+
+	heights := make([]int, 0, len(extByHeight))
+	for h := range extByHeight {
+		heights = append(heights, h)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(heights)))
+	list.Videos = make([]VideoFormat, len(heights))
+	for i, h := range heights {
+		list.Videos[i] = VideoFormat{Height: h, Ext: extByHeight[h]}
+	}
+	return list, nil
+}
+
+// qualityArgs translates the frontend's quality choice into yt-dlp arguments.
+//   - "" / "best": yt-dlp's default (best video + best audio).
+//   - "audio": best audio only; extracted to an audio file when ffmpeg exists.
+//   - "<height>" (e.g. "1080"): prefer the largest format at or below that
+//     height. -S "res:H" sorts rather than filters, so if nothing is at or
+//     below H, yt-dlp gracefully takes the smallest format above it instead
+//     of failing.
+func (a *App) qualityArgs(quality string) ([]string, error) {
+	switch q := strings.TrimSpace(quality); q {
+	case "", "best":
+		return nil, nil
+	case "audio":
+		args := []string{"-f", "bestaudio/best"}
+		if a.FfmpegAvailable() {
+			// -x strips the video container and keeps the native audio codec
+			// (m4a/opus); without ffmpeg we just download the audio stream as-is.
+			args = append(args, "-x")
+		}
+		return args, nil
+	default:
+		h, err := strconv.Atoi(q)
+		if err != nil || h <= 0 {
+			return nil, fmt.Errorf("invalid quality %q", quality)
+		}
+		return []string{"-S", fmt.Sprintf("res:%d", h)}, nil
+	}
+}
+
 // DownloadVideo runs yt-dlp on the given URL, saving the result into the user's
-// Downloads folder. It streams live progress to the frontend via Wails events
-// ("download:progress" and "download:log") while the process runs, and returns
-// once the download finishes. Bound to the frontend "Download" button.
-func (a *App) DownloadVideo(url string) (string, error) {
+// Downloads folder. If start and/or end are non-empty, only that section of the
+// video is downloaded (requires ffmpeg). It streams live progress to the
+// frontend via Wails events ("download:progress" and "download:log") while the
+// process runs, and returns once the download finishes. quality is "best",
+// "audio", or a max video height like "1080" (see qualityArgs). Bound to the
+// frontend "Download" button.
+func (a *App) DownloadVideo(url, start, end, quality string) (string, error) {
 	url = strings.TrimSpace(url)
+	start = strings.TrimSpace(start)
+	end = strings.TrimSpace(end)
 	if url == "" {
 		return "", fmt.Errorf("please enter a URL")
 	}
@@ -160,10 +219,6 @@ func (a *App) DownloadVideo(url string) (string, error) {
 		return "", fmt.Errorf("yt-dlp is not installed yet — click \"Download latest yt-dlp\" first")
 	}
 
-	bin, err := ytDlpPath()
-	if err != nil {
-		return "", err
-	}
 	dir, err := downloadsDir()
 	if err != nil {
 		return "", err
@@ -178,13 +233,59 @@ func (a *App) DownloadVideo(url string) (string, error) {
 	progressTmpl := "download:" + progressSentinel +
 		"|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
 
-	cmd := exec.Command(
-		bin,
+	args := []string{
 		"--newline",
 		"--progress-template", progressTmpl,
 		"-o", outTmpl,
-		url,
-	)
+	}
+
+	qArgs, err := a.qualityArgs(quality)
+	if err != nil {
+		return "", err
+	}
+	args = append(args, qArgs...)
+
+	// Point yt-dlp at our managed ffmpeg if we downloaded one (no-op when the
+	// user skipped it or relies on a system install).
+	args = append(args, ffmpegLocationArgs()...)
+
+	// Section download: build a "*START-END" spec for --download-sections.
+	if start != "" || end != "" {
+		if !a.FfmpegAvailable() {
+			return "", fmt.Errorf("downloading a section requires ffmpeg, which wasn't found on your system — install it (e.g. from ffmpeg.org) or clear the start/stop fields")
+		}
+
+		startSec, endSec := 0.0, -1.0
+		from, to := "0", "inf"
+		if start != "" {
+			if startSec, err = parseTimestamp(start); err != nil {
+				return "", fmt.Errorf("start time: %w", err)
+			}
+			from = start
+		}
+		if end != "" {
+			if endSec, err = parseTimestamp(end); err != nil {
+				return "", fmt.Errorf("stop time: %w", err)
+			}
+			to = end
+		}
+		if endSec >= 0 && endSec <= startSec {
+			return "", fmt.Errorf("stop time must be after start time")
+		}
+
+		args = append(args,
+			"--download-sections", fmt.Sprintf("*%s-%s", from, to),
+			// Re-encode just around the cut points so the clip starts and ends
+			// exactly where requested instead of snapping to the nearest keyframe.
+			"--force-keyframes-at-cuts",
+		)
+	}
+
+	args = append(args, url)
+	cmd, err := ytDlpCmd(args...)
+	if err != nil {
+		return "", err
+	}
 
 	// Funnel both stdout and stderr into one pipe so we read everything in order.
 	pr, pw := io.Pipe()
