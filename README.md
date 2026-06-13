@@ -12,6 +12,19 @@ Paste a link, pick what you want, hit download. yt-dlp-gui wraps yt-dlp's most u
 2. Open the app. On first launch it walks you through setup that downloads the app's dependencies — a standalone Python runtime, the latest yt-dlp, and (optionally) ffmpeg. Everything lives in the app's own folder; nothing touches your system Python.
 3. Paste a video URL into the field
 
+### macOS users — first launch
+
+The macOS build is not yet code-signed or notarized by Apple, so Gatekeeper will block it the first time. This is expected. To open it:
+
+- **Recommended:** unzip the download, then **right-click (or Control-click) `ytpgui.app` → Open**, and confirm **Open** in the dialog. You only need to do this once; afterward it launches normally.
+- If you double-clicked first and macOS said the app is *"damaged"* or *"can't be opened"*, clear the quarantine flag in Terminal and reopen:
+
+  ```bash
+  xattr -dr com.apple.quarantine /path/to/ytpgui.app
+  ```
+
+  (Replace the path, or drag the app onto the Terminal window to fill it in.)
+
 ## Using the app
 
 **Paste a URL.** Drop in a link and ytpgui fetches a preview — title and thumbnail — so you know you've got the right video before downloading.
