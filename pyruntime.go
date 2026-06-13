@@ -176,6 +176,36 @@ func (a *App) GetDepsStatus() DepsStatus {
 	return s
 }
 
+// OpenDependenciesFolder reveals the app's managed dependencies folder (the
+// interpreter, yt-dlp, optional libraries, and ffmpeg all live here) in the
+// OS file manager. Bound to the frontend's "Open dependencies folder" option.
+func (a *App) OpenDependenciesFolder() error {
+	dir, err := appDir()
+	if err != nil {
+		return err
+	}
+	// Create it if it doesn't exist yet so the file manager has a folder to
+	// open even before any dependency has been downloaded.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	case "linux":
+		cmd = exec.Command("xdg-open", dir)
+	default:
+		return fmt.Errorf("opening a folder isn't supported on %s", runtime.GOOS)
+	}
+	// Start (don't Wait): the file manager keeps running, and explorer.exe is
+	// known to return a non-zero exit code even on success.
+	return cmd.Start()
+}
+
 // InstallPython downloads the standalone Python interpreter. Bound to the
 // frontend's per-dependency download button.
 func (a *App) InstallPython() error {

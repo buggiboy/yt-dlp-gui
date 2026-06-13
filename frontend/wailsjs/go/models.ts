@@ -20,6 +20,36 @@ export namespace main {
 	        this.ffmpegSkipped = source["ffmpegSkipped"];
 	    }
 	}
+	export class DownloadOptions {
+	    url: string;
+	    start: string;
+	    end: string;
+	    quality: string;
+	    audioFormat: string;
+	    folder: string;
+	    subtitles: boolean;
+	    subLangs: string;
+	    embedMeta: boolean;
+	    sponsorBlock: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.start = source["start"];
+	        this.end = source["end"];
+	        this.quality = source["quality"];
+	        this.audioFormat = source["audioFormat"];
+	        this.folder = source["folder"];
+	        this.subtitles = source["subtitles"];
+	        this.subLangs = source["subLangs"];
+	        this.embedMeta = source["embedMeta"];
+	        this.sponsorBlock = source["sponsorBlock"];
+	    }
+	}
 	export class VideoFormat {
 	    height: number;
 	    ext: string;

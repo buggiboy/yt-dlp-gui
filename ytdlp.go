@@ -63,6 +63,21 @@ func downloadsDir() (string, error) {
 	return filepath.Join(home, "Downloads"), nil
 }
 
+// DownloadsFolder exposes the default save location to the frontend so it can
+// show where files will land before the user picks a custom folder.
+func (a *App) DownloadsFolder() (string, error) {
+	return downloadsDir()
+}
+
+// ChooseDownloadFolder opens the OS-native folder picker and returns the
+// chosen path, or "" if the user cancelled. Bound to the frontend "Choose…"
+// button next to the save location.
+func (a *App) ChooseDownloadFolder() (string, error) {
+	return wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Choose download folder",
+	})
+}
+
 // YtDlpInstalled reports whether the app's Python runtime and the yt-dlp zipapp
 // are both present. Bound to the frontend so the UI can show install state.
 func (a *App) YtDlpInstalled() bool {
@@ -173,14 +188,26 @@ func (a *App) ListFormats(rawURL string) (FormatList, error) {
 	return list, nil
 }
 
+// audioFormats is the allowlist of conversion targets we expose in the UI.
+// Anything here is handed to ffmpeg via yt-dlp's --audio-format.
+var audioFormats = map[string]bool{
+	"mp3":  true,
+	"m4a":  true,
+	"opus": true,
+	"flac": true,
+}
+
 // qualityArgs translates the frontend's quality choice into yt-dlp arguments.
 //   - "" / "best": yt-dlp's default (best video + best audio).
 //   - "audio": best audio only; extracted to an audio file when ffmpeg exists.
+//     audioFormat ("" = keep native codec, or one of audioFormats) selects a
+//     conversion target; it's ignored for non-audio downloads and without
+//     ffmpeg (the UI disables the picker in that case, so no error needed).
 //   - "<height>" (e.g. "1080"): prefer the largest format at or below that
 //     height. -S "res:H" sorts rather than filters, so if nothing is at or
 //     below H, yt-dlp gracefully takes the smallest format above it instead
 //     of failing.
-func (a *App) qualityArgs(quality string) ([]string, error) {
+func (a *App) qualityArgs(quality, audioFormat string) ([]string, error) {
 	switch q := strings.TrimSpace(quality); q {
 	case "", "best":
 		return nil, nil
@@ -190,6 +217,15 @@ func (a *App) qualityArgs(quality string) ([]string, error) {
 			// -x strips the video container and keeps the native audio codec
 			// (m4a/opus); without ffmpeg we just download the audio stream as-is.
 			args = append(args, "-x")
+			if f := strings.TrimSpace(audioFormat); f != "" {
+				if !audioFormats[f] {
+					return nil, fmt.Errorf("invalid audio format %q", audioFormat)
+				}
+				// --audio-quality 0 = best VBR setting for lossy targets
+				// (yt-dlp's default is 5, a middling bitrate); harmless no-op
+				// for flac.
+				args = append(args, "--audio-format", f, "--audio-quality", "0")
+			}
 		}
 		return args, nil
 	default:
@@ -201,17 +237,33 @@ func (a *App) qualityArgs(quality string) ([]string, error) {
 	}
 }
 
-// DownloadVideo runs yt-dlp on the given URL, saving the result into the user's
-// Downloads folder. If start and/or end are non-empty, only that section of the
-// video is downloaded (requires ffmpeg). It streams live progress to the
-// frontend via Wails events ("download:progress" and "download:log") while the
-// process runs, and returns once the download finishes. quality is "best",
-// "audio", or a max video height like "1080" (see qualityArgs). Bound to the
-// frontend "Download" button.
-func (a *App) DownloadVideo(url, start, end, quality string) (string, error) {
-	url = strings.TrimSpace(url)
-	start = strings.TrimSpace(start)
-	end = strings.TrimSpace(end)
+// DownloadOptions bundles everything the Download button sends. A struct
+// (rather than positional string params) so new options can be added without
+// touching every call site — the frontend just gains another field.
+type DownloadOptions struct {
+	URL          string   `json:"url"`
+	Start        string   `json:"start"`        // clip start ("" = from beginning)
+	End          string   `json:"end"`           // clip end ("" = to the end)
+	Quality      string   `json:"quality"`       // "best", "audio", or a max height like "1080"
+	AudioFormat  string   `json:"audioFormat"`   // "", "mp3", "m4a", "opus", "flac" (audio-only)
+	Folder       string   `json:"folder"`        // save location ("" = Downloads)
+	Subtitles    bool     `json:"subtitles"`     // download and embed subtitles
+	SubLangs     string   `json:"subLangs"`      // subtitle language codes ("en", "en,fr", "all")
+	EmbedMeta    bool     `json:"embedMeta"`     // embed metadata + thumbnail + chapters
+	SponsorBlock []string `json:"sponsorBlock"`  // SponsorBlock categories to remove (empty = off)
+}
+
+// DownloadVideo runs yt-dlp on the given URL, saving the result into
+// opts.Folder (the user's Downloads folder by default). If Start and/or End
+// are non-empty, only that section of the video is downloaded (requires
+// ffmpeg). It streams live progress to the frontend via Wails events
+// ("download:progress" and "download:log") while the process runs, and
+// returns once the download finishes. See qualityArgs for Quality and
+// AudioFormat. Bound to the frontend "Download" button.
+func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
+	url := strings.TrimSpace(opts.URL)
+	start := strings.TrimSpace(opts.Start)
+	end := strings.TrimSpace(opts.End)
 	if url == "" {
 		return "", fmt.Errorf("please enter a URL")
 	}
@@ -219,12 +271,20 @@ func (a *App) DownloadVideo(url, start, end, quality string) (string, error) {
 		return "", fmt.Errorf("yt-dlp is not installed yet — click \"Download latest yt-dlp\" first")
 	}
 
-	dir, err := downloadsDir()
-	if err != nil {
-		return "", err
+	dir := strings.TrimSpace(opts.Folder)
+	if dir == "" {
+		d, err := downloadsDir()
+		if err != nil {
+			return "", err
+		}
+		dir = d
+	} else if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		// The folder was picked via the OS dialog, so it existed then — but it
+		// may have been deleted/unmounted since.
+		return "", fmt.Errorf("the chosen folder no longer exists: %s", dir)
 	}
 
-	// Output template: save as "<video title>.<extension>" in Downloads.
+	// Output template: save as "<video title>.<extension>" in the target folder.
 	outTmpl := filepath.Join(dir, "%(title)s.%(ext)s")
 
 	// --newline makes yt-dlp print each progress update on its own line (instead
@@ -239,7 +299,7 @@ func (a *App) DownloadVideo(url, start, end, quality string) (string, error) {
 		"-o", outTmpl,
 	}
 
-	qArgs, err := a.qualityArgs(quality)
+	qArgs, err := a.qualityArgs(opts.Quality, opts.AudioFormat)
 	if err != nil {
 		return "", err
 	}
@@ -279,6 +339,38 @@ func (a *App) DownloadVideo(url, start, end, quality string) (string, error) {
 			// exactly where requested instead of snapping to the nearest keyframe.
 			"--force-keyframes-at-cuts",
 		)
+	}
+
+	// Subtitles: prefer manually-uploaded subs, fall back to auto-generated.
+	// --embed-subs muxes them into the container (requires ffmpeg for mp4).
+	if opts.Subtitles {
+		langs := strings.TrimSpace(opts.SubLangs)
+		if langs == "" {
+			langs = "en"
+		}
+		args = append(args,
+			"--write-subs",
+			"--write-auto-subs",
+			"--sub-langs", langs,
+			"--embed-subs",
+		)
+	}
+
+	// Embed metadata, thumbnail, and chapter markers into the output file.
+	// Thumbnail embedding requires ffmpeg; yt-dlp will skip it gracefully if
+	// ffmpeg isn't available.
+	if opts.EmbedMeta {
+		args = append(args,
+			"--embed-metadata",
+			"--embed-thumbnail",
+			"--embed-chapters",
+		)
+	}
+
+	// SponsorBlock: remove the selected segment categories. yt-dlp calls
+	// SponsorBlock's API and cuts the matched segments via ffmpeg.
+	if len(opts.SponsorBlock) > 0 {
+		args = append(args, "--sponsorblock-remove", strings.Join(opts.SponsorBlock, ","))
 	}
 
 	args = append(args, url)
