@@ -26,9 +26,13 @@ export function InstallYtDlpZip():Promise<void>;
 
 export function ListFormats(arg1:string):Promise<main.FormatList>;
 
+export function LoadSettings():Promise<string>;
+
 export function OpenDependenciesFolder():Promise<void>;
 
 export function PreviewPort():Promise<number>;
+
+export function SaveSettings(arg1:string):Promise<void>;
 
 export function SkipFfmpeg():Promise<void>;
 

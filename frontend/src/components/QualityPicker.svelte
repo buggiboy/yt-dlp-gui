@@ -63,40 +63,35 @@
   {/if}
 
   {#if loadingFormats}
-    <span class="note">checking available qualities…</span>
+    <span class="note">getting options...</span>
   {:else if availableFormats && availableFormats.length > 0}
-    <span class="note ok">showing this video's qualities</span>
+    <span class="note ok">loaded</span>
   {/if}
 </div>
 
 <style>
   .quality {
-    margin-top: 1rem;
     text-align: left;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
     flex-wrap: wrap;
   }
 
   label {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.9rem;
-  }
-
-  label select {
-    font-size: 0.9rem;
+    gap: 0.45rem;
+    font-size: var(--fs-base);
+    font-weight: 600;
   }
 
   .note {
-    font-size: 0.78rem;
-    opacity: 0.5;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
   }
 
   .note.ok {
     color: #5dc06b;
-    opacity: 0.8;
   }
 </style>

@@ -1,4 +1,4 @@
-# yt-dlp-gui
+# yt-dlp-gui - Youtube Downloader
 
 <p align="center">
   <img src=".github/assets/app.png" alt="ytpgui main window" width="700">

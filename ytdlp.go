@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -251,6 +252,71 @@ type DownloadOptions struct {
 	SubLangs     string   `json:"subLangs"`      // subtitle language codes ("en", "en,fr", "all")
 	EmbedMeta    bool     `json:"embedMeta"`     // embed metadata + thumbnail + chapters
 	SponsorBlock []string `json:"sponsorBlock"`  // SponsorBlock categories to remove (empty = off)
+	RateLimit    string   `json:"rateLimit"`     // max download rate for --limit-rate (e.g. "5M"; "" = unlimited)
+	ConcurrentFragments int `json:"concurrentFragments"` // parallel fragment downloads (--concurrent-fragments N; 0 = off, yt-dlp default of 1)
+	ExtraArgs    string   `json:"extraArgs"`     // raw extra yt-dlp flags (power-user escape hatch)
+	Outtmpl      string   `json:"outtmpl"`       // filename template, no folder ("" = default %(title)s.%(ext)s)
+	NameArgs     []string `json:"nameArgs"`      // naming flags from the format builder (--replace-in-metadata, --restrict-filenames, --trim-filenames)
+}
+
+// splitArgs splits a raw flag string into individual arguments the way a shell
+// would, honoring single and double quotes (and backslash escapes outside
+// single quotes) so users can pass values containing spaces — e.g.
+//
+//	-o '%(title)s [%(id)s].%(ext)s'
+//
+// It performs no variable expansion, globbing, or other shell processing: it
+// only tokenises. An unbalanced quote or dangling backslash is reported as an
+// error so the user gets clear feedback rather than a confusing yt-dlp failure.
+func splitArgs(s string) ([]string, error) {
+	var (
+		args    []string
+		cur     strings.Builder
+		inArg   bool
+		quote   rune // 0, '\'' or '"'
+		escaped bool
+	)
+	for _, r := range s {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			inArg = true
+			escaped = false
+		case r == '\\' && quote != '\'':
+			// Backslash escapes the next char everywhere except inside
+			// single quotes (matching POSIX shell behaviour).
+			escaped = true
+			inArg = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			inArg = true
+		case unicode.IsSpace(r):
+			if inArg {
+				args = append(args, cur.String())
+				cur.Reset()
+				inArg = false
+			}
+		default:
+			cur.WriteRune(r)
+			inArg = true
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unbalanced %c quote in extra arguments", quote)
+	}
+	if escaped {
+		return nil, fmt.Errorf("dangling backslash at end of extra arguments")
+	}
+	if inArg {
+		args = append(args, cur.String())
+	}
+	return args, nil
 }
 
 // DownloadVideo runs yt-dlp on the given URL, saving the result into
@@ -284,8 +350,14 @@ func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
 		return "", fmt.Errorf("the chosen folder no longer exists: %s", dir)
 	}
 
-	// Output template: save as "<video title>.<extension>" in the target folder.
-	outTmpl := filepath.Join(dir, "%(title)s.%(ext)s")
+	// Output template: the filename pattern from the format builder (falling back
+	// to "<video title>.<extension>"), saved into the target folder. The template
+	// may contain "/" to create subfolders, which filepath.Join preserves.
+	name := strings.TrimSpace(opts.Outtmpl)
+	if name == "" {
+		name = "%(title)s.%(ext)s"
+	}
+	outTmpl := filepath.Join(dir, name)
 
 	// --newline makes yt-dlp print each progress update on its own line (instead
 	// of redrawing one line with carriage returns), so we can read them cleanly.
@@ -371,6 +443,39 @@ func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
 	// SponsorBlock's API and cuts the matched segments via ffmpeg.
 	if len(opts.SponsorBlock) > 0 {
 		args = append(args, "--sponsorblock-remove", strings.Join(opts.SponsorBlock, ","))
+	}
+
+	// Speed limit: cap the download rate so it doesn't saturate the connection.
+	// yt-dlp accepts a number with an optional unit suffix (e.g. "500K", "5M").
+	if rate := strings.TrimSpace(opts.RateLimit); rate != "" {
+		args = append(args, "--limit-rate", rate)
+	}
+
+	// Parallel fragments: fetch multiple fragments at once. A big speedup on
+	// sites that serve fragmented (DASH/HLS) media. 0 means leave yt-dlp at its
+	// default of 1 (sequential).
+	if opts.ConcurrentFragments > 0 {
+		args = append(args, "--concurrent-fragments", strconv.Itoa(opts.ConcurrentFragments))
+	}
+
+	// Naming flags from the filename-format builder (--replace-in-metadata,
+	// --restrict-filenames, --trim-filenames). Already tokenized by the frontend
+	// as discrete argv entries, so they're appended verbatim — no shell parsing.
+	// Placed before extra args so a power-user flag in Extra arguments wins.
+	if len(opts.NameArgs) > 0 {
+		args = append(args, opts.NameArgs...)
+	}
+
+	// Extra arguments: a raw escape hatch for power users who need a flag the UI
+	// doesn't expose. Parsed shell-style so quoted values survive, and appended
+	// last (just before the URL) so a user-supplied flag overrides the matching
+	// flag the UI set above where yt-dlp honours the later occurrence.
+	if extra := strings.TrimSpace(opts.ExtraArgs); extra != "" {
+		extraArgs, err := splitArgs(extra)
+		if err != nil {
+			return "", err
+		}
+		args = append(args, extraArgs...)
 	}
 
 	args = append(args, url)

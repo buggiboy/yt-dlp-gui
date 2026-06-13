@@ -16,12 +16,18 @@
 
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape') onCancel() }} />
 
+<!-- Backdrop dismissal is a mouse convenience; Escape (handled above) is the
+     keyboard-accessible way to close, so the static-element interaction here is
+     intentional. -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="backdrop" role="presentation" onclick={onCancel}>
   <div
     class="modal"
     role="dialog"
     aria-modal="true"
     aria-labelledby="modal-title"
+    tabindex="-1"
     onclick={(e) => e.stopPropagation()}
   >
     <h2 id="modal-title">Download {info.name}?</h2>
@@ -32,7 +38,7 @@
     </p>
     <div class="actions">
       <button onclick={onCancel}>Cancel</button>
-      <button onclick={onConfirm}>Download</button>
+      <button class="primary" onclick={onConfirm}>Download</button>
     </div>
   </div>
 </div>

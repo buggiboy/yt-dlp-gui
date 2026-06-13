@@ -17,10 +17,158 @@ body {
     sans-serif;
 }
 
-/* Native controls should use the OS font, not Nunito, to look right. */
-button,
+/* ------------------------------------------------------------------ *
+ * Design tokens
+ *
+ * One source of truth for the control palette, radii and type scale so
+ * buttons, selects and inputs read as one consistent system instead of a
+ * mix of native OS widgets and bespoke fields.
+ * ------------------------------------------------------------------ */
+:root {
+    --accent: #4f9dff;
+    --accent-strong: #3b8eff;
+
+    --surface: rgba(255, 255, 255, 0.05);
+    --surface-border: rgba(255, 255, 255, 0.1);
+
+    --control-bg: rgba(255, 255, 255, 0.08);
+    --control-bg-hover: rgba(255, 255, 255, 0.14);
+    --control-border: rgba(255, 255, 255, 0.18);
+    --control-border-hover: rgba(255, 255, 255, 0.32);
+
+    --text: #ededed;
+    --text-dim: rgba(255, 255, 255, 0.6);
+    --text-faint: rgba(255, 255, 255, 0.42);
+
+    --radius: 8px;
+    --radius-control: 6px;
+
+    /* Type scale */
+    --fs-xs: 0.75rem;
+    --fs-sm: 0.82rem;
+    --fs-base: 0.9rem;
+    --fs-lg: 0.95rem;
+
+    --ctrl-font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ------------------------------------------------------------------ *
+ * Buttons — one push-button look everywhere. Text-style buttons
+ * (links, disclosure toggles, chip controls) opt out via their own
+ * component-scoped rules, which win on specificity.
+ * ------------------------------------------------------------------ */
+button {
+    font-family: var(--ctrl-font);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--control-border);
+    border-radius: var(--radius-control);
+    padding: 6px 12px;
+    line-height: 1.25;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease,
+        opacity 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+    background: var(--control-bg-hover);
+    border-color: var(--control-border-hover);
+}
+
+button:active:not(:disabled) {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* Primary call-to-action (Download, Apply, …). */
+button.primary {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+button.primary:hover:not(:disabled) {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+}
+
+/* ------------------------------------------------------------------ *
+ * Text inputs — shared dark field styling. Components may override
+ * width / font (e.g. monospace flag fields) but inherit the rest.
+ * ------------------------------------------------------------------ */
+input[type="text"],
+input[type="number"],
+input[type="search"] {
+    font-family: var(--ctrl-font);
+    font-size: var(--fs-base);
+    color: var(--text);
+    background-color: var(--control-bg);
+    border: 1px solid var(--control-border);
+    border-radius: var(--radius-control);
+    padding: 6px 10px;
+    outline: none;
+    transition: border-color 0.12s ease;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus {
+    border-color: var(--accent);
+}
+
+input:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* ------------------------------------------------------------------ *
+ * Selects — restyled to match the inputs with a custom chevron so they
+ * stop rendering as light native OS dropdowns against the dark theme.
+ * ------------------------------------------------------------------ */
+select {
+    font-family: var(--ctrl-font);
+    font-size: var(--fs-sm);
+    color: var(--text);
+    background-color: var(--control-bg);
+    border: 1px solid var(--control-border);
+    border-radius: var(--radius-control);
+    padding: 6px 26px 6px 10px;
+    line-height: 1.25;
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5 5 6.5 8 3.5' fill='none' stroke='%23ededed' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 10px;
+    transition: border-color 0.12s ease;
+}
+
+select:hover:not(:disabled) {
+    border-color: var(--control-border-hover);
+}
+
+select:focus {
+    border-color: var(--accent);
+}
+
+select:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Branded checkmarks for native checkboxes. */
 input[type="checkbox"] {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-family: var(--ctrl-font);
+    accent-color: var(--accent);
 }
 
 @font-face {

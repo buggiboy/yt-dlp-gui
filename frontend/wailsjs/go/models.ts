@@ -31,6 +31,11 @@ export namespace main {
 	    subLangs: string;
 	    embedMeta: boolean;
 	    sponsorBlock: string[];
+	    rateLimit: string;
+	    concurrentFragments: number;
+	    extraArgs: string;
+	    outtmpl: string;
+	    nameArgs: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DownloadOptions(source);
@@ -48,6 +53,11 @@ export namespace main {
 	        this.subLangs = source["subLangs"];
 	        this.embedMeta = source["embedMeta"];
 	        this.sponsorBlock = source["sponsorBlock"];
+	        this.rateLimit = source["rateLimit"];
+	        this.concurrentFragments = source["concurrentFragments"];
+	        this.extraArgs = source["extraArgs"];
+	        this.outtmpl = source["outtmpl"];
+	        this.nameArgs = source["nameArgs"];
 	    }
 	}
 	export class VideoFormat {

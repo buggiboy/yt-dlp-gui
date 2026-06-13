@@ -1,4 +1,6 @@
 <script lang="ts">
+  import InfoTip from './InfoTip.svelte'
+
   // SponsorBlock segment categories exposed by the SponsorBlock API.
   // Labels match what the SponsorBlock browser extension uses.
   const SB_CATEGORIES = [
@@ -20,10 +22,12 @@
     embedMeta = $bindable(),
     sponsorBlock = $bindable(),
     sponsorBlockCategories = $bindable(),
+    extraArgs = $bindable(),
+    filenamePreview,
     ffmpegAvailable,
     busy,
     onChooseFolder,
-    onOpenDepsFolder,
+    onEditFilename,
   }: {
     folder: string
     defaultFolder: string
@@ -32,10 +36,12 @@
     embedMeta: boolean
     sponsorBlock: boolean
     sponsorBlockCategories: string[]
+    extraArgs: string
+    filenamePreview: string
     ffmpegAvailable: boolean
     busy: boolean
     onChooseFolder: () => void
-    onOpenDepsFolder: () => void
+    onEditFilename: () => void
   } = $props()
 
   // Subtitle language presets. "all" tells yt-dlp to grab every available
@@ -115,6 +121,15 @@
         </button>
       </div>
 
+      <!-- Filename format -->
+      <div class="row">
+        <span class="row-label">Filename format</span>
+        <span class="path" title={filenamePreview}>{filenamePreview}</span>
+        <button onclick={onEditFilename} disabled={busy} title="Customize how downloads are named">
+          Edit…
+        </button>
+      </div>
+
       <!-- Embed metadata & thumbnail -->
       <div class="row">
         <label class="check-label">
@@ -167,6 +182,11 @@
           <input type="checkbox" bind:checked={sponsorBlock} disabled={busy} />
           SponsorBlock
         </label>
+        <InfoTip label="About SponsorBlock" align="left">
+          SponsorBlock uses a community database to automatically skip or remove
+          non-content segments — sponsors, intros, self-promotion, and more — from
+          downloaded videos. Pick which categories to cut below.
+        </InfoTip>
         {#if sponsorBlock}
           <!-- Category checkboxes. At least one should be checked for the
                flag to do anything; the grid makes the list scannable. -->
@@ -189,13 +209,24 @@
         {/if}
       </div>
 
-      <!-- Open dependencies folder -->
-      <div class="row">
-        <span class="row-label">Dependencies folder</span>
-        <span class="path">where Python, yt-dlp &amp; ffmpeg are stored</span>
-        <button onclick={onOpenDepsFolder} title="Open the folder where the app's dependencies are stored">
-          Open
-        </button>
+      <!-- Extra arguments: raw escape hatch for power users. Parsed shell-style
+           by the backend and appended last, so a flag here overrides the
+           matching flag set by the controls above. -->
+      <div class="row wrap">
+        <span class="row-label">Extra arguments</span>
+        <span class="note no-margin">passed straight to yt-dlp, overrides UI options</span>
+        <input
+          class="extra-input"
+          type="text"
+          bind:value={extraArgs}
+          disabled={busy}
+          placeholder="--no-mtime --cookies-from-browser chrome"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          title="Raw yt-dlp flags, e.g. --no-mtime or --cookies-from-browser chrome. Quote values with spaces."
+        />
       </div>
 
     </div>
@@ -208,16 +239,28 @@
     text-align: left;
   }
 
+  /* Text-style disclosure, not a push-button — opts out of the global button
+     box via background/border none (scoped specificity wins). */
   .toggle {
-    font-size: 0.85rem;
+    background: none;
+    border: none;
+    padding: 0.2rem 0;
+    font-size: var(--fs-base);
+    font-weight: 600;
+    color: var(--accent);
+    cursor: pointer;
   }
 
-  /* Same card surface as ClipSection so the two cards read consistently. */
+  .toggle:hover {
+    background: none;
+    color: var(--accent-strong);
+  }
+
   .body {
-    margin-top: 0.5rem;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
+    margin-top: 0.6rem;
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius);
     padding: 0.25rem 1rem;
   }
 
@@ -230,7 +273,7 @@
     gap: 0.5rem;
     padding: 0.6rem 0;
     border-top: 1px solid rgba(255, 255, 255, 0.07);
-    font-size: 0.9rem;
+    font-size: var(--fs-base);
     flex-wrap: nowrap;
   }
 
@@ -255,8 +298,8 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    font-size: 0.85rem;
-    opacity: 0.65;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
   }
 
   /* Checkbox + inline label. The <label> wraps the <input> so the whole line
@@ -312,16 +355,42 @@
   }
 
   .note {
-    font-size: 0.78rem;
-    opacity: 0.5;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
     margin-left: auto;
   }
 
-  /* Icon-only button: center the SVG without overriding native button look. */
+  /* Variant used inline next to a row label, where the auto left-margin would
+     push it to the far right away from the label it describes. */
+  .note.no-margin {
+    margin-left: 0;
+  }
+
+  /* Full-width monospace field for raw flags. Spans its own line beneath the
+     label/hint, matching how the subtitle custom-lang field wraps. */
+  .extra-input {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #eee;
+    outline: none;
+  }
+
+  .extra-input:focus {
+    border-color: #4f9dff;
+  }
+
+  /* Icon-only button: square padding so it stays compact against the shared
+     button style. */
   .icon-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 6px 8px;
   }
 
   .icon-btn svg {
