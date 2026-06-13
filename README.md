@@ -1,5 +1,9 @@
 # yt-dlp-gui
 
+<p align="center">
+  <img src=".github/assets/app.png" alt="ytpgui main window" width="700">
+</p>
+
 A simple, clean desktop app for downloading videos with [yt-dlp](https://github.com/yt-dlp/yt-dlp) — no terminal required.
 
 Paste a link, pick what you want, hit download. yt-dlp-gui wraps yt-dlp's most useful features in a tidy interface, and it manages its own copies of Python, yt-dlp, and ffmpeg so you don't have to install anything yourself.
