@@ -53,16 +53,28 @@ jobs:
       - name: Build
         run: wails build -platform ${{ matrix.platform }}
 
-      - name: Rename artifact (Unix)
-        if: matrix.os != 'windows-latest'
-        run: mv build/bin/ytpgui${{ matrix.ext }} build/bin/${{ matrix.artifact }}${{ matrix.ext }}
+      - name: Package artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        run: cd build/bin && zip -r ${{ matrix.artifact }}.zip ytpgui.app
+
+      - name: Rename artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: mv build/bin/ytpgui build/bin/${{ matrix.artifact }}
 
       - name: Rename artifact (Windows)
         if: matrix.os == 'windows-latest'
         run: Rename-Item build\bin\ytpgui${{ matrix.ext }} ${{ matrix.artifact }}${{ matrix.ext }}
         shell: pwsh
 
-      - name: Upload artifact
+      - name: Upload artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/bin/${{ matrix.artifact }}.zip
+
+      - name: Upload artifact (non-macOS)
+        if: matrix.os != 'macos-latest'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
