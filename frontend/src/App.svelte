@@ -517,8 +517,7 @@
     }}
   >
     <div class="clip-head">
-      <span class="clip-title">Download only a section</span>
-      <span class="clip-badge">optional</span>
+      <span class="clip-title">Clip</span>
       {#if !ffmpegOk}
         <span class="clip-need">requires ffmpeg — click to install</span>
       {/if}
@@ -658,8 +657,7 @@
     white-space: nowrap;
   }
 
-  .dep-optional,
-  .clip-badge {
+  .dep-optional {
     font-size: 0.65rem;
     font-weight: 500;
     text-transform: uppercase;

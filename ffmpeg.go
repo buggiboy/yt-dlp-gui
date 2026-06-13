@@ -150,9 +150,11 @@ func (a *App) installFfmpegUnix() error {
 	if runtime.GOOS == "linux" {
 		osName = "linux"
 	}
-	arch := "amd64"
-	if runtime.GOARCH == "arm64" {
-		arch = "arm64"
+	// The build server offers exactly amd64 and arm64 for both OSes; refuse
+	// anything else rather than downloading a binary that can't run.
+	arch := runtime.GOARCH
+	if arch != "amd64" && arch != "arm64" {
+		return fmt.Errorf("no managed ffmpeg build for %s/%s — install ffmpeg from your package manager", runtime.GOOS, arch)
 	}
 	base := fmt.Sprintf("https://ffmpeg.martin-riedl.de/redirect/latest/%s/%s/release", osName, arch)
 
@@ -178,8 +180,13 @@ func (a *App) installFfmpegUnix() error {
 }
 
 // installFfmpegWindows fetches yt-dlp's recommended Windows build — one zip
-// containing both ffmpeg.exe and ffprobe.exe under a bin/ directory.
+// containing both ffmpeg.exe and ffprobe.exe under a bin/ directory. The
+// win64 build also covers Windows-on-ARM, which runs x64 binaries under
+// emulation; only 32-bit Windows is genuinely unsupported.
 func (a *App) installFfmpegWindows() error {
+	if runtime.GOARCH == "386" {
+		return fmt.Errorf("no managed ffmpeg build for 32-bit Windows — install ffmpeg manually from ffmpeg.org")
+	}
 	a.emitLog("Downloading ffmpeg…")
 	tmp, err := a.downloadToTemp(ffmpegBuildsWinURL, 0, 90)
 	if err != nil {
