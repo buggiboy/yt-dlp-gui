@@ -603,8 +603,8 @@ func (a *App) fetchYtDlp(force bool) error {
 		return err
 	}
 	counted := &progressReader{
-		r:     resp.Body,
-		total: resp.ContentLength,
+		r:      resp.Body,
+		total:  resp.ContentLength,
 		onTick: func(pct float64) { a.emitInstallProgress(pct) },
 	}
 	if _, err := io.Copy(out, counted); err != nil {
