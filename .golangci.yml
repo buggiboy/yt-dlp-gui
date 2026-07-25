@@ -70,6 +70,23 @@ linters:
         # user-supplied input. The traversal guard in extractTarGz — which is
         # the rule that would actually matter here — stays enforced by hand.
         - G110
+        # G301/G302/G306: "expect 0750/0600 permissions or less". What this app
+        # installs is a *runnable* Python interpreter, plus ffmpeg and the
+        # yt-dlp zipapp; 0600 files can't be executed and the tarball's own
+        # modes are restored on extract anyway. Everything lands under the
+        # per-user appDir(), which the OS already scopes to this account, so
+        # the modes here are about making the tree work, not about who can
+        # reach it.
+        - G301
+        - G302
+        - G306
+        # G104: "errors unhandled". Duplicates errcheck, which is already in the
+        # standard set and reads the deliberate `_ =` assignments correctly.
+        - G104
+        # G305 (archive traversal) and G705 (XSS) are deliberately NOT
+        # excluded. The three call sites where gosec can't see the guard carry
+        # a #nosec naming both the rule and the guard, so the checks stay live
+        # for code written later.
 
     staticcheck:
       checks:

@@ -788,6 +788,23 @@ func getJSON(url string, v interface{}) error {
 
 // --- extraction --------------------------------------------------------------
 
+// insideDir reports whether path is root itself or sits beneath it. Both must
+// already be cleaned (filepath.Join does that) or the prefix test can be
+// fooled by a ".." segment.
+func insideDir(root, path string) bool {
+	return path == root || strings.HasPrefix(path, root+string(os.PathSeparator))
+}
+
+// resolveLink returns where a symlink at linkPath with the given target would
+// actually land. Relative targets resolve against the link's own directory,
+// which is how the OS reads them.
+func resolveLink(linkPath, linkname string) string {
+	if filepath.IsAbs(linkname) {
+		return filepath.Clean(linkname)
+	}
+	return filepath.Join(filepath.Dir(linkPath), linkname)
+}
+
 // extractTarGz unpacks a gzip-compressed tar stream into dest. It recreates
 // directories, regular files (preserving the executable bit), and symlinks —
 // the interpreter relies on symlinks like bin/python3 -> python3.12.
@@ -809,9 +826,9 @@ func extractTarGz(r io.Reader, dest string) error {
 			return err
 		}
 
-		target := filepath.Join(cleanDest, hdr.Name)
+		target := filepath.Join(cleanDest, hdr.Name) // #nosec G305 -- containment is checked on the next line
 		// Guard against path-traversal entries ("../../etc/...").
-		if target != cleanDest && !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
+		if !insideDir(cleanDest, target) {
 			return fmt.Errorf("unsafe path in archive: %s", hdr.Name)
 		}
 
@@ -837,6 +854,14 @@ func extractTarGz(r io.Reader, dest string) error {
 				return err
 			}
 		case tar.TypeSymlink:
+			// The check above stops an *entry* landing outside dest, but not a
+			// symlink pointing outside — a later entry written "through" that
+			// link would escape anyway. So resolve where this one leads and
+			// refuse it if that's out of tree. The interpreter's own links
+			// (bin/python3 -> python3.12) are relative and stay inside.
+			if !insideDir(cleanDest, resolveLink(target, hdr.Linkname)) {
+				return fmt.Errorf("unsafe symlink in archive: %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -845,11 +870,17 @@ func extractTarGz(r io.Reader, dest string) error {
 				return err
 			}
 		case tar.TypeLink:
+			// Hard-link sources are relative to the archive root, and linking to
+			// a file outside dest would pull it into the tree.
+			source := filepath.Join(cleanDest, hdr.Linkname) // #nosec G305 -- containment is checked on the next line
+			if !insideDir(cleanDest, source) {
+				return fmt.Errorf("unsafe hard link in archive: %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
 			_ = os.Remove(target)
-			if err := os.Link(filepath.Join(cleanDest, hdr.Linkname), target); err != nil {
+			if err := os.Link(source, target); err != nil {
 				return err
 			}
 		}

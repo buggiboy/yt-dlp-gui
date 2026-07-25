@@ -64,7 +64,10 @@ func (a *App) startPreviewServer() error {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, wrapperPage, "https://www.youtube-nocookie.com/embed/"+id)
+		// gosec's taint analysis flags the id as reaching HTML output, but it
+		// can't see the guard immediately above: videoIDRe pins the value to
+		// exactly 11 characters of [A-Za-z0-9_-], which has nothing to escape.
+		fmt.Fprintf(w, wrapperPage, "https://www.youtube-nocookie.com/embed/"+id) // #nosec G705 -- validated by videoIDRe above
 	})
 
 	// /embed?src=<https player url> — generic path for other sites' players
