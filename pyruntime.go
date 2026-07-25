@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,14 +41,65 @@ const pbsLatestURL = "https://raw.githubusercontent.com/astral-sh/python-build-s
 // It's tiny and needs an interpreter to run — which is exactly what we provide.
 const ytDlpZipURL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
 
+// ytDlpReleasesAPI lists yt-dlp's releases newest-first. Asking for a page of
+// them (rather than just /releases/latest) tells us both what the current
+// release is *and* how many releases the user is behind, which is what decides
+// between linking one changelog and linking a range of them.
+const ytDlpReleasesAPI = "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30"
+
+// ytDlpRepoURL is the base for the human-facing changelog links we hand back.
+const ytDlpRepoURL = "https://github.com/yt-dlp/yt-dlp"
+
+// appDirName is the per-user folder we keep everything in; legacyAppDirName is
+// what it was called before the app was renamed. See migrateLegacyAppDir.
+const (
+	appDirName       = "yt-dlp-gui"
+	legacyAppDirName = "ytpgui"
+)
+
 // appDir is the per-user folder holding everything we manage (interpreter +
-// yt-dlp). e.g. ~/Library/Application Support/ytpgui on macOS.
+// yt-dlp). e.g. ~/Library/Application Support/yt-dlp-gui on macOS.
 func appDir() (string, error) {
 	cfg, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cfg, "ytpgui"), nil
+	return filepath.Join(cfg, appDirName), nil
+}
+
+// migrateLegacyAppDir moves the data folder from the app's old name to the
+// current one, once, at startup.
+//
+// Worth the code: everything we manage lives in there — the Python runtime,
+// yt-dlp, ffmpeg, and settings.json — so renaming the app without this would
+// silently strand a working install behind the old name and make every existing
+// user re-download ~50 MB and lose their settings. The interpreter is a
+// relocatable python-build-standalone build and we only ever invoke it as
+// `python -I` / `python -m pip`, both of which resolve relative to the
+// executable, so moving the tree doesn't break it.
+//
+// Best-effort: on failure the app just behaves like a fresh install.
+func migrateLegacyAppDir() error {
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return err
+	}
+	newDir := filepath.Join(cfg, appDirName)
+	oldDir := filepath.Join(cfg, legacyAppDirName)
+	if oldDir == newDir {
+		return nil
+	}
+	// A new folder already in place means the migration has run, or a fresh
+	// install got there first. Either way, merging two runtimes isn't something
+	// to attempt silently — leave both alone.
+	if _, err := os.Stat(newDir); err == nil {
+		return nil
+	}
+	if fi, err := os.Stat(oldDir); err != nil || !fi.IsDir() {
+		return nil // nothing to migrate
+	}
+	// Same parent directory, so this is an atomic rename rather than a copy.
+	return os.Rename(oldDir, newDir)
 }
 
 // pythonRoot is where the extracted interpreter tree lives. The tarball's top
@@ -140,7 +192,11 @@ func ytDlpCmd(args ...string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	full := append([]string{"-I", zip}, args...)
-	return exec.Command(py, full...), nil
+	cmd := exec.Command(py, full...)
+	// Own process group (so a cancel takes ffmpeg down too) on Unix; hidden
+	// console window on Windows. See proc_unix.go / proc_windows.go.
+	setProcAttr(cmd)
+	return cmd, nil
 }
 
 // --- install flow -----------------------------------------------------------
@@ -215,6 +271,154 @@ func (a *App) InstallPython() error {
 // InstallYtDlpZip downloads the yt-dlp zipapp. Bound to the frontend.
 func (a *App) InstallYtDlpZip() error {
 	return a.ensureYtDlp()
+}
+
+// YtDlpUpdateCheck is CheckYtDlpUpdate's result: what's installed, what the
+// current release is, and where to read about the difference.
+type YtDlpUpdateCheck struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	Available bool   `json:"available"`
+	// ChangelogURL is empty unless an update is available. It points at a single
+	// release's notes when the user is one behind, and at a compare view
+	// spanning every intervening release when they're further back.
+	ChangelogURL string `json:"changelogURL"`
+}
+
+// CheckYtDlpUpdate asks GitHub what the current yt-dlp release is and compares
+// it against the installed copy, without downloading anything.
+//
+// This is deliberately separate from UpdateYtDlp: the download is a few MB and
+// swapping the zipapp blocks downloads, so the user gets to see what's on offer
+// (and read the changelog) before committing to it. Bound to the frontend.
+func (a *App) CheckYtDlpUpdate() (YtDlpUpdateCheck, error) {
+	var res YtDlpUpdateCheck
+
+	// Reporting the installed version means running it, which needs the
+	// interpreter — same prerequisite as the update itself.
+	if py, err := pythonExePath(); err != nil || !fileExists(py) {
+		return res, fmt.Errorf("install the Python runtime first — yt-dlp runs on it")
+	}
+	// Best-effort: a missing or unrunnable copy leaves Current empty, which
+	// below reads as "anything released is an update".
+	res.Current, _ = a.YtDlpVersion()
+
+	var releases []struct {
+		TagName    string `json:"tag_name"`
+		HTMLURL    string `json:"html_url"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
+	}
+	if err := getJSON(ytDlpReleasesAPI, &releases); err != nil {
+		return res, fmt.Errorf("could not reach GitHub to check for updates: %w", err)
+	}
+
+	// Stable releases only, newest first (GitHub already orders them that way).
+	stable := make([]ytDlpRelease, 0, len(releases))
+	for _, r := range releases {
+		if r.Draft || r.Prerelease || r.TagName == "" {
+			continue
+		}
+		stable = append(stable, ytDlpRelease{tag: r.TagName, url: r.HTMLURL})
+	}
+	if len(stable) == 0 {
+		return res, fmt.Errorf("GitHub didn't list any yt-dlp releases")
+	}
+
+	latest := stable[0]
+	res.Latest = latest.tag
+
+	// yt-dlp versions are dates (2025.06.30), so a plain string comparison
+	// orders them correctly — including nightly builds, whose extra time
+	// component sorts after the stable release they were cut from. Anything
+	// at or ahead of the latest release is up to date.
+	res.Available = res.Current == "" || res.Current < latest.tag
+	if !res.Available {
+		return res, nil
+	}
+
+	res.ChangelogURL = ytDlpChangelogURL(res.Current, stable)
+	return res, nil
+}
+
+// ytDlpRelease is the pair of things we need from a GitHub release: its version
+// tag and the page its notes live on.
+type ytDlpRelease struct{ tag, url string }
+
+// ytDlpChangelogURL picks the most useful "what changed" link for the gap
+// between the installed version and the newest release in stable (which is
+// ordered newest-first and must not be empty).
+//
+// One release behind: that release's own notes. Several behind: a compare view,
+// which lists every release in between. When we can't place the installed
+// version among the releases we fetched (a very old copy, or a nightly whose
+// tag doesn't exist in this repo), a compare link would 404 — so we fall back
+// to the releases page and let the user scroll.
+func ytDlpChangelogURL(current string, stable []ytDlpRelease) string {
+	if len(stable) == 0 {
+		return ytDlpRepoURL + "/releases"
+	}
+	latest := stable[0]
+	if current == "" {
+		return latest.url
+	}
+	for i, r := range stable {
+		if r.tag != current {
+			continue
+		}
+		if i == 1 {
+			return latest.url
+		}
+		return fmt.Sprintf("%s/compare/%s...%s", ytDlpRepoURL, current, latest.tag)
+	}
+	return ytDlpRepoURL + "/releases"
+}
+
+// YtDlpUpdate is UpdateYtDlp's result: the version now installed, and whether
+// that differs from what was there before.
+type YtDlpUpdate struct {
+	Version string `json:"version"`
+	Updated bool   `json:"updated"`
+}
+
+// UpdateYtDlp re-downloads the yt-dlp zipapp, replacing whatever is installed
+// with the current release. Normally reached by confirming what
+// CheckYtDlpUpdate found.
+//
+// This matters more than a typical "check for updates": yt-dlp tracks site
+// changes that break extraction, so a months-old copy stops working on YouTube
+// entirely. Nothing else in the app ever replaces the zipapp — the install path
+// skips the download once the file exists — so this is the only way to move off
+// the build a user first downloaded.
+//
+// The download URL is GitHub's "latest" redirect, which doesn't name a version,
+// so we compare the reported version before and after rather than trusting the
+// check that preceded it. Bound to the frontend.
+func (a *App) UpdateYtDlp() (YtDlpUpdate, error) {
+	var res YtDlpUpdate
+
+	// Running yt-dlp needs the interpreter, and reporting a version is half of
+	// what this does — so send the user to the setup panel rather than
+	// downloading a zipapp we can't then execute.
+	if py, err := pythonExePath(); err != nil || !fileExists(py) {
+		return res, fmt.Errorf("install the Python runtime first — yt-dlp runs on it")
+	}
+
+	// Best-effort: if the current copy is missing or unrunnable, "before" is
+	// empty and we simply report the result as an update.
+	before, _ := a.YtDlpVersion()
+
+	if err := a.fetchYtDlp(true); err != nil {
+		return res, err
+	}
+
+	after, err := a.YtDlpVersion()
+	if err != nil {
+		return res, err
+	}
+	res.Version = after
+	res.Updated = after != before
+	return res, nil
 }
 
 // InstallExtras pip-installs yt-dlp's optional dependencies. Requires the
@@ -355,18 +559,27 @@ func (a *App) ensurePython() error {
 	}
 
 	if !fileExists(py) {
-		return fmt.Errorf("Python runtime extracted but the interpreter wasn't where expected (%s)", py)
+		return fmt.Errorf("extracted the Python runtime but the interpreter wasn't where expected (%s)", py)
 	}
 	a.emitInstallProgress(100)
 	return nil
 }
 
+// ensureYtDlp downloads the yt-dlp zipapp if it isn't already there.
 func (a *App) ensureYtDlp() error {
+	return a.fetchYtDlp(false)
+}
+
+// fetchYtDlp downloads the yt-dlp zipapp. When force is false it's a no-op if
+// the file already exists (the install path); force skips that check so the
+// update path always pulls the current release. The write is staged and
+// renamed either way, so a failed update leaves the working copy in place.
+func (a *App) fetchYtDlp(force bool) error {
 	zip, err := ytDlpZipPath()
 	if err != nil {
 		return err
 	}
-	if fileExists(zip) {
+	if !force && fileExists(zip) {
 		return nil
 	}
 
@@ -561,7 +774,7 @@ func getJSON(url string, v interface{}) error {
 	}
 	req.Header.Set("Accept", "application/json")
 	// GitHub's API rejects requests that don't send a User-Agent.
-	req.Header.Set("User-Agent", "ytpgui")
+	req.Header.Set("User-Agent", "yt-dlp-gui")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -589,7 +802,7 @@ func extractTarGz(r io.Reader, dest string) error {
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -660,7 +873,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.r.Read(p)
 	pr.read += int64(n)
 	if pr.total > 0 && pr.onTick != nil {
-		if time.Since(pr.lastEmit) > 100*time.Millisecond || err == io.EOF {
+		if time.Since(pr.lastEmit) > 100*time.Millisecond || errors.Is(err, io.EOF) {
 			pr.lastEmit = time.Now()
 			pct := float64(pr.read) / float64(pr.total) * 100
 			if pct > 100 {

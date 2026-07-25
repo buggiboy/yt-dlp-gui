@@ -61,19 +61,28 @@
 
   const PRESET_IDS = LANG_PRESETS.filter((p) => p.id !== 'custom').map((p) => p.id)
 
-  // Local state: which preset is selected. Initialised from the incoming
-  // subLangs value so the dropdown reflects any existing setting.
-  let subLangPreset = $state(
-    (PRESET_IDS as readonly string[]).includes(subLangs) ? subLangs : 'custom'
+  // Sticks once the user picks "Custom…" so that typing a value which happens
+  // to match a preset ("en") doesn't yank the text field away mid-edit.
+  let customLang = $state(false)
+
+  // Which preset the dropdown shows. Derived rather than snapshotted: this
+  // component mounts with the app, but subLangs arrives later from the saved
+  // settings, and a one-time read would leave the dropdown saying "English"
+  // while the real value was something else entirely.
+  let subLangPreset = $derived(
+    customLang || !(PRESET_IDS as readonly string[]).includes(subLangs)
+      ? 'custom'
+      : subLangs
   )
 
   function onLangPresetChange(id: string) {
-    subLangPreset = id
     if (id === 'custom') {
+      customLang = true
       // Clear subLangs so the placeholder guides the user rather than showing
       // a confusing carry-over value from the previously selected preset.
       subLangs = ''
     } else {
+      customLang = false
       subLangs = id
     }
   }
@@ -95,6 +104,19 @@
   <button class="toggle" onclick={() => (showAdvanced = !showAdvanced)}>
     {showAdvanced ? '▾' : '▸'} Advanced options
   </button>
+
+  <!-- Extra arguments persist between sessions and can break every download if
+       they're wrong, so they don't get to hide behind a collapsed panel. Only
+       shown while collapsed — once open, the field speaks for itself. -->
+  {#if !showAdvanced && extraArgs.trim()}
+    <button
+      class="args-badge"
+      onclick={() => (showAdvanced = true)}
+      title={`Extra arguments in use: ${extraArgs.trim()}`}
+    >
+      extra args
+    </button>
+  {/if}
 
   {#if showAdvanced}
     <div class="body">
@@ -254,6 +276,26 @@
   .toggle:hover {
     background: none;
     color: var(--accent-strong);
+  }
+
+  /* Amber pill flagging saved extra arguments while the panel is shut. Clicking
+     it opens the panel at the field in question. */
+  .args-badge {
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.45rem;
+    background: rgba(240, 180, 41, 0.14);
+    border: 1px solid rgba(240, 180, 41, 0.45);
+    border-radius: 999px;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: #f0b429;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+
+  .args-badge:hover {
+    background: rgba(240, 180, 41, 0.24);
+    border-color: rgba(240, 180, 41, 0.7);
   }
 
   .body {

@@ -13,17 +13,17 @@ jobs:
         include:
           - os: macos-latest
             platform: darwin/universal
-            artifact: ytpgui-mac-universal
+            artifact: yt-dlp-gui-mac-universal
             ext: ''
             buildtags: ''
           - os: windows-latest
             platform: windows/amd64
-            artifact: ytpgui-windows-amd64
+            artifact: yt-dlp-gui-windows-amd64
             ext: '.exe'
             buildtags: ''
           - os: ubuntu-latest
             platform: linux/amd64
-            artifact: ytpgui-linux-amd64
+            artifact: yt-dlp-gui-linux-amd64
             ext: ''
             buildtags: '-tags webkit2_41'
 
@@ -56,15 +56,15 @@ jobs:
 
       - name: Package artifact (macOS)
         if: matrix.os == 'macos-latest'
-        run: cd build/bin && zip -r ${{ matrix.artifact }}.zip ytpgui.app
+        run: cd build/bin && zip -r ${{ matrix.artifact }}.zip yt-dlp-gui.app
 
       - name: Rename artifact (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: mv build/bin/ytpgui build/bin/${{ matrix.artifact }}
+        run: mv build/bin/yt-dlp-gui build/bin/${{ matrix.artifact }}
 
       - name: Rename artifact (Windows)
         if: matrix.os == 'windows-latest'
-        run: Rename-Item build\bin\ytpgui${{ matrix.ext }} ${{ matrix.artifact }}${{ matrix.ext }}
+        run: Rename-Item build\bin\yt-dlp-gui${{ matrix.ext }} ${{ matrix.artifact }}${{ matrix.ext }}
         shell: pwsh
 
       - name: Upload artifact (macOS)

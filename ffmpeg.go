@@ -232,7 +232,7 @@ func (a *App) downloadToTemp(url string, pctFrom, pctTo float64) (string, error)
 		return "", fmt.Errorf("server returned %s", resp.Status)
 	}
 
-	f, err := os.CreateTemp("", "ytpgui-dl-*.zip")
+	f, err := os.CreateTemp("", "yt-dlp-gui-dl-*.zip")
 	if err != nil {
 		return "", err
 	}

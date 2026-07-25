@@ -1,4 +1,4 @@
-module ytpgui
+module yt-dlp-gui
 
 go 1.23.0
 

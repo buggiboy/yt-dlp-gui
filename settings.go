@@ -9,7 +9,7 @@ import (
 
 // settingsPath returns the location of the persisted settings file, which lives
 // alongside the app's managed dependencies in appDir()
-// (e.g. ~/Library/Application Support/ytpgui/settings.json on macOS).
+// (e.g. ~/Library/Application Support/yt-dlp-gui/settings.json on macOS).
 func settingsPath() (string, error) {
 	base, err := appDir()
 	if err != nil {

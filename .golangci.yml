@@ -1,0 +1,97 @@
+# golangci-lint configuration (v2 schema).
+#
+# Philosophy: catch bugs, not style. Formatting is settled by gofmt/goimports
+# in the `formatters` section below, so the linters here are free to be about
+# correctness — and every one of them is enabled because it has something real
+# to say about *this* codebase, not because it exists.
+#
+# Run locally:  golangci-lint run
+# Auto-format:  golangci-lint fmt
+version: "2"
+
+run:
+  # Match the Linux release build. Wails selects its webkit binding by build
+  # tag, and without this golangci-lint type-checks a different tree than CI
+  # builds. A no-op on macOS and Windows.
+  build-tags:
+    - webkit2_41
+
+linters:
+  # The default set: errcheck, govet, ineffassign, staticcheck, unused.
+  # In v2, staticcheck also covers what used to be gosimple and stylecheck.
+  default: standard
+
+  enable:
+    # This app is mostly "fetch a URL, stream it to disk". bodyclose catches the
+    # leak that pattern invites, and it's invisible until the app runs for hours.
+    - bodyclose
+    # Enforces errors.Is/As over == and %w over %v. The error-classification in
+    # urlcheck.go depends on wrapping surviving intact.
+    - errorlint
+    # We download archives from the network and unpack them into the user's
+    # home directory. Worth having a second opinion on. See the exclusions
+    # below for the rules that don't apply to a local GUI shelling out to a
+    # tool it manages itself.
+    - gosec
+    # Typos in user-facing error strings are the ones that get screenshotted.
+    - misspell
+    # Redundant type conversions, usually a leftover from a refactor.
+    - unconvert
+    # Values assigned and then overwritten before use — nearly always a bug.
+    - wastedassign
+
+  # Worth revisiting later, deliberately off for now:
+  #   noctx    — flags every http.Get and exec.Command that doesn't take a
+  #              Context. That's a real gap (probes can't be cancelled when the
+  #              user edits the URL), but it's a design change, not a lint fix.
+  #              Turn this on as the forcing function when tackling it.
+  #   nilerr   — good rule, but migrateLegacyAppDir deliberately returns nil on
+  #              a stat error ("nothing to migrate" is not a failure).
+
+  settings:
+    gosec:
+      excludes:
+        # G107: "url provided to HTTP request as taint input". Every download
+        # URL in this app is resolved at runtime (GitHub release assets, the
+        # python-build-standalone index) from a hardcoded set of https hosts.
+        # Constant URLs aren't an option and aren't the point.
+        - G107
+        # G204: "subprocess launched with variable". Running yt-dlp with
+        # user-chosen arguments *is* the application. Arguments are passed as
+        # discrete argv entries via exec.Command — never through a shell — so
+        # there is no injection surface to close.
+        - G204
+        # G304: "file inclusion via variable". Paths are built from appDir()
+        # and the OS folder picker, both of which are ours or the user's own
+        # explicit choice.
+        - G304
+        # G110: "potential DoS via decompression bomb". The archives are the
+        # pinned upstream Python and ffmpeg builds fetched over TLS, not
+        # user-supplied input. The traversal guard in extractTarGz — which is
+        # the rule that would actually matter here — stays enforced by hand.
+        - G110
+
+    staticcheck:
+      checks:
+        - all
+        # ST1000: package-level doc comment. This is a single `package main`
+        # split across files for readability; a package comment on one of them
+        # would be arbitrary.
+        - -ST1000
+
+  exclusions:
+    # Wails writes its bindings with a "DO NOT EDIT" header; skip them.
+    generated: lax
+    warn-unused: true
+    presets:
+      # Restores the sensible defaults v1 had built in: unchecked Close/Remove,
+      # fmt print returns, and the common false positives.
+      - std-error-handling
+      - common-false-positives
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax

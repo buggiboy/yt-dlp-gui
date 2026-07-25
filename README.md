@@ -1,7 +1,7 @@
 # yt-dlp-gui - Youtube Downloader
 
 <p align="center">
-  <img src=".github/assets/app.png" alt="ytpgui main window" width="700">
+  <img src=".github/assets/app.png" alt="yt-dlp-gui main window" width="700">
 </p>
 
 A simple, clean desktop app for downloading videos with [yt-dlp](https://github.com/yt-dlp/yt-dlp) — no terminal required.
@@ -20,22 +20,22 @@ Paste a link, pick what you want, hit download. yt-dlp-gui wraps yt-dlp's most u
 
 The macOS build is not yet code-signed or notarized by Apple, so Gatekeeper will block it the first time. This is expected. To open it:
 
-- **Recommended:** unzip the download, then **right-click (or Control-click) `ytpgui.app` → Open**, and confirm **Open** in the dialog. You only need to do this once; afterward it launches normally.
+- **Recommended:** unzip the download, then **right-click (or Control-click) `yt-dlp-gui.app` → Open**, and confirm **Open** in the dialog. You only need to do this once; afterward it launches normally.
 - If you double-clicked first and macOS said the app is *"damaged"* or *"can't be opened"*, clear the quarantine flag in Terminal and reopen:
 
   ```bash
-  xattr -dr com.apple.quarantine /path/to/ytpgui.app
+  xattr -dr com.apple.quarantine /path/to/yt-dlp-gui.app
   ```
 
   (Replace the path, or drag the app onto the Terminal window to fill it in.)
 
 ## Using the app
 
-**Paste a URL.** Drop in a link and ytpgui fetches a preview — title and thumbnail — so you know you've got the right video before downloading.
+**Paste a URL.** Drop in a link and yt-dlp-gui fetches a preview — title and thumbnail — so you know you've got the right video before downloading.
 
 **Pick your quality.** Choose the best available, cap it at a resolution (1080p, 720p, and so on), or grab audio only. For audio-only you can convert to `mp3`, `m4a`, `opus`, or `flac`.
 
-**Clip a section** *(optional)*. Only want part of the video? Set a start and/or stop time — `90`, `1:30`, or `1:02:30` all work — and ytpgui downloads just that slice, cut cleanly at the timestamps you asked for. (Requires ffmpeg.)
+**Clip a section** *(optional)*. Only want part of the video? Set a start and/or stop time — `90`, `1:30`, or `1:02:30` all work — and yt-dlp-gui downloads just that slice, cut cleanly at the timestamps you asked for. (Requires ffmpeg.)
 
 **Advanced options** *(optional)*. Tucked away until you need them:
 
@@ -54,7 +54,7 @@ You'll need [Go](https://go.dev/dl/) 1.23+, [Node.js](https://nodejs.org), and t
 ```bash
 # clone and enter the project
 git clone https://github.com/buggiboy/yt-dlp-gui.git
-cd yt-dlp-gui/ytpgui
+cd yt-dlp-gui
 
 # live development with hot reload
 wails dev

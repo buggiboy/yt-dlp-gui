@@ -28,6 +28,11 @@ body {
     --accent: #4f9dff;
     --accent-strong: #3b8eff;
 
+    /* Error state. --danger-text is lightened from --danger-border so it stays
+       readable as body text on the dark surface. */
+    --danger-border: #e24b4a;
+    --danger-text: #f09595;
+
     --surface: rgba(255, 255, 255, 0.05);
     --surface-border: rgba(255, 255, 255, 0.1);
 
@@ -97,6 +102,19 @@ button.primary {
 button.primary:hover:not(:disabled) {
     background: var(--accent-strong);
     border-color: var(--accent-strong);
+}
+
+/* Destructive/stop action (Cancel). Same weight as .primary so swapping one
+   for the other in place doesn't shift the layout. */
+button.danger {
+    color: #fff;
+    background: var(--danger-border);
+    border-color: var(--danger-border);
+}
+
+button.danger:hover:not(:disabled) {
+    background: #c93f3e;
+    border-color: #c93f3e;
 }
 
 /* ------------------------------------------------------------------ *

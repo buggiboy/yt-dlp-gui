@@ -16,10 +16,16 @@
 
   let {
     format,
+    meta,
     onApply,
     onCancel,
   }: {
     format: FilenameFormat
+    /** Real metadata for the URL currently in the field, keyed by yt-dlp field
+     *  name. When present the preview builds on the actual video instead of the
+     *  registry samples, so you're designing against what you'll really get.
+     *  Undefined when no URL has resolved yet. */
+    meta?: Record<string, string>
     onApply: (f: FilenameFormat) => void
     onCancel: () => void
   } = $props()
@@ -34,7 +40,7 @@
   let showAdvanced = $state(false)
   let showCustomRules = $state(false)
 
-  let previewRes = $derived(preview(draft))
+  let previewRes = $derived(preview(draft, { meta }))
   let compiled = $derived(compile(draft))
   let presetValue = $derived(matchPreset(draft))
   let selectedToken = $derived(
@@ -114,9 +120,9 @@
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape') onCancel() }} />
 
 <!-- Backdrop dismissal is a mouse convenience; Escape (handled above) is the
-     keyboard-accessible way to close, so the static-element interaction here is
-     intentional. -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+     keyboard-accessible way to close. role="presentation" already marks the
+     backdrop as decoration, so only the click-without-keydown warning needs
+     silencing here. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="backdrop" role="presentation" onclick={onCancel}>
   <div

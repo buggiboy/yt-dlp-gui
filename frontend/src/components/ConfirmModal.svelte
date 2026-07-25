@@ -17,9 +17,9 @@
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape') onCancel() }} />
 
 <!-- Backdrop dismissal is a mouse convenience; Escape (handled above) is the
-     keyboard-accessible way to close, so the static-element interaction here is
-     intentional. -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+     keyboard-accessible way to close. role="presentation" already marks the
+     backdrop as decoration, so only the click-without-keydown warning needs
+     silencing here. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="backdrop" role="presentation" onclick={onCancel}>
   <div

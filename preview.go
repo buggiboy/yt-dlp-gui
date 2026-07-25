@@ -80,7 +80,16 @@ func (a *App) startPreviewServer() error {
 		fmt.Fprintf(w, wrapperPage, html.EscapeString(src))
 	})
 
-	go http.Serve(ln, mux) //nolint:errcheck — runs for the app's lifetime
+	// Explicit timeouts rather than http.Serve's unbounded defaults. The
+	// listener is loopback-only so there's no real attacker here, but a stalled
+	// connection would otherwise pin a goroutine for the app's lifetime.
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+	}
+	go srv.Serve(ln) //nolint:errcheck // runs for the app's lifetime
 	return nil
 }
 

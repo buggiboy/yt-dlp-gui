@@ -6,20 +6,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
-	"unicode"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // progressSentinel marks lines produced by our custom yt-dlp progress template
 // so we can tell them apart from yt-dlp's normal log output.
-const progressSentinel = "__YTPGUI_PROGRESS__"
+const progressSentinel = "__YTDLP_GUI_PROGRESS__"
 
 // ansiRe strips terminal color codes that yt-dlp sometimes embeds in its
 // progress strings, so percentages/speeds parse cleanly.
@@ -126,6 +125,9 @@ type FormatList struct {
 // ListFormats asks yt-dlp (metadata only, no download) which formats are
 // actually available for a URL. The frontend uses this to narrow its preset
 // quality dropdown to what the video really offers. Bound to the frontend.
+//
+// CheckURL returns the same list from its own probe, so the UI normally gets
+// formats for free while validating; this remains the standalone entry point.
 func (a *App) ListFormats(rawURL string) (FormatList, error) {
 	var list FormatList
 	rawURL = strings.TrimSpace(rawURL)
@@ -136,23 +138,23 @@ func (a *App) ListFormats(rawURL string) (FormatList, error) {
 		return list, fmt.Errorf("yt-dlp is not installed yet")
 	}
 
-	cmd, err := ytDlpCmd("--dump-json", "--no-playlist", "--playlist-items", "1", "--no-warnings", rawURL)
-	if err != nil {
-		return list, err
-	}
-	// Metadata extraction should be quick; kill it if a site makes it crawl.
-	timer := time.AfterFunc(30*time.Second, func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill() //nolint:errcheck
-		}
-	})
-	defer timer.Stop()
-
-	out, err := cmd.Output()
+	out, err := a.probeURL(rawURL)
 	if err != nil {
 		return list, fmt.Errorf("could not read formats: %w", err)
 	}
+	list, err = decodeFormatList(out)
+	if err != nil {
+		return FormatList{}, err
+	}
+	return list, nil
+}
 
+// decodeFormatList parses a yt-dlp --dump-json blob into the selectable video
+// heights and the best audio-only container. Split out so ListFormats and
+// CheckURL agree on exactly what a format list means. (The same blob's
+// descriptive metadata is read separately by decodePreviewMeta.)
+func decodeFormatList(out []byte) (FormatList, error) {
+	var list FormatList
 	var meta struct {
 		Formats []struct {
 			Vcodec string `json:"vcodec"`
@@ -208,13 +210,16 @@ var audioFormats = map[string]bool{
 //     height. -S "res:H" sorts rather than filters, so if nothing is at or
 //     below H, yt-dlp gracefully takes the smallest format above it instead
 //     of failing.
-func (a *App) qualityArgs(quality, audioFormat string) ([]string, error) {
+//
+// ffmpegAvailable is passed in rather than looked up so this stays a pure
+// function — see args.go.
+func qualityArgs(quality, audioFormat string, ffmpegAvailable bool) ([]string, error) {
 	switch q := strings.TrimSpace(quality); q {
 	case "", "best":
 		return nil, nil
 	case "audio":
 		args := []string{"-f", "bestaudio/best"}
-		if a.FfmpegAvailable() {
+		if ffmpegAvailable {
 			// -x strips the video container and keeps the native audio codec
 			// (m4a/opus); without ffmpeg we just download the audio stream as-is.
 			args = append(args, "-x")
@@ -238,247 +243,59 @@ func (a *App) qualityArgs(quality, audioFormat string) ([]string, error) {
 	}
 }
 
-// DownloadOptions bundles everything the Download button sends. A struct
-// (rather than positional string params) so new options can be added without
-// touching every call site — the frontend just gains another field.
-type DownloadOptions struct {
-	URL          string   `json:"url"`
-	Start        string   `json:"start"`        // clip start ("" = from beginning)
-	End          string   `json:"end"`           // clip end ("" = to the end)
-	Quality      string   `json:"quality"`       // "best", "audio", or a max height like "1080"
-	AudioFormat  string   `json:"audioFormat"`   // "", "mp3", "m4a", "opus", "flac" (audio-only)
-	Folder       string   `json:"folder"`        // save location ("" = Downloads)
-	Subtitles    bool     `json:"subtitles"`     // download and embed subtitles
-	SubLangs     string   `json:"subLangs"`      // subtitle language codes ("en", "en,fr", "all")
-	EmbedMeta    bool     `json:"embedMeta"`     // embed metadata + thumbnail + chapters
-	SponsorBlock []string `json:"sponsorBlock"`  // SponsorBlock categories to remove (empty = off)
-	RateLimit    string   `json:"rateLimit"`     // max download rate for --limit-rate (e.g. "5M"; "" = unlimited)
-	ConcurrentFragments int `json:"concurrentFragments"` // parallel fragment downloads (--concurrent-fragments N; 0 = off, yt-dlp default of 1)
-	ExtraArgs    string   `json:"extraArgs"`     // raw extra yt-dlp flags (power-user escape hatch)
-	Outtmpl      string   `json:"outtmpl"`       // filename template, no folder ("" = default %(title)s.%(ext)s)
-	NameArgs     []string `json:"nameArgs"`      // naming flags from the format builder (--replace-in-metadata, --restrict-filenames, --trim-filenames)
-}
-
-// splitArgs splits a raw flag string into individual arguments the way a shell
-// would, honoring single and double quotes (and backslash escapes outside
-// single quotes) so users can pass values containing spaces — e.g.
-//
-//	-o '%(title)s [%(id)s].%(ext)s'
-//
-// It performs no variable expansion, globbing, or other shell processing: it
-// only tokenises. An unbalanced quote or dangling backslash is reported as an
-// error so the user gets clear feedback rather than a confusing yt-dlp failure.
-func splitArgs(s string) ([]string, error) {
-	var (
-		args    []string
-		cur     strings.Builder
-		inArg   bool
-		quote   rune // 0, '\'' or '"'
-		escaped bool
-	)
-	for _, r := range s {
-		switch {
-		case escaped:
-			cur.WriteRune(r)
-			inArg = true
-			escaped = false
-		case r == '\\' && quote != '\'':
-			// Backslash escapes the next char everywhere except inside
-			// single quotes (matching POSIX shell behaviour).
-			escaped = true
-			inArg = true
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '\'' || r == '"':
-			quote = r
-			inArg = true
-		case unicode.IsSpace(r):
-			if inArg {
-				args = append(args, cur.String())
-				cur.Reset()
-				inArg = false
-			}
-		default:
-			cur.WriteRune(r)
-			inArg = true
-		}
-	}
-	if quote != 0 {
-		return nil, fmt.Errorf("unbalanced %c quote in extra arguments", quote)
-	}
-	if escaped {
-		return nil, fmt.Errorf("dangling backslash at end of extra arguments")
-	}
-	if inArg {
-		args = append(args, cur.String())
-	}
-	return args, nil
-}
-
 // DownloadVideo runs yt-dlp on the given URL, saving the result into
 // opts.Folder (the user's Downloads folder by default). If Start and/or End
 // are non-empty, only that section of the video is downloaded (requires
 // ffmpeg). It streams live progress to the frontend via Wails events
 // ("download:progress" and "download:log") while the process runs, and
-// returns once the download finishes. See qualityArgs for Quality and
-// AudioFormat. Bound to the frontend "Download" button.
+// returns once the download finishes.
+//
+// The arguments themselves are assembled by buildArgs (args.go) — the same
+// function PreviewCommand uses, so what the user was shown is what runs. All
+// this adds is the plumbing that makes the output machine-readable. Bound to
+// the frontend "Download" button.
 func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
-	url := strings.TrimSpace(opts.URL)
-	start := strings.TrimSpace(opts.Start)
-	end := strings.TrimSpace(opts.End)
-	if url == "" {
+	if strings.TrimSpace(opts.URL) == "" {
 		return "", fmt.Errorf("please enter a URL")
 	}
 	if !a.YtDlpInstalled() {
 		return "", fmt.Errorf("yt-dlp is not installed yet — click \"Download latest yt-dlp\" first")
 	}
 
-	dir := strings.TrimSpace(opts.Folder)
-	if dir == "" {
-		d, err := downloadsDir()
-		if err != nil {
-			return "", err
-		}
-		dir = d
-	} else if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		// The folder was picked via the OS dialog, so it existed then — but it
-		// may have been deleted/unmounted since.
+	dir, err := resolveFolder(opts.Folder)
+	if err != nil {
+		return "", err
+	}
+	// The folder was picked via the OS dialog, so it existed then — but it may
+	// have been deleted or unmounted since.
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return "", fmt.Errorf("the chosen folder no longer exists: %s", dir)
 	}
 
-	// Output template: the filename pattern from the format builder (falling back
-	// to "<video title>.<extension>"), saved into the target folder. The template
-	// may contain "/" to create subfolders, which filepath.Join preserves.
-	name := strings.TrimSpace(opts.Outtmpl)
-	if name == "" {
-		name = "%(title)s.%(ext)s"
+	userArgs, err := buildArgs(opts, argEnv{
+		ffmpegAvailable: a.FfmpegAvailable(),
+		dir:             dir,
+		// A real download refuses options it can't make sense of rather than
+		// quietly dropping them — the opposite of the preview.
+		lenient: false,
+	})
+	if err != nil {
+		return "", err
 	}
-	outTmpl := filepath.Join(dir, name)
 
 	// --newline makes yt-dlp print each progress update on its own line (instead
 	// of redrawing one line with carriage returns), so we can read them cleanly.
 	// --progress-template emits our own machine-readable line we can parse.
+	// Neither is a user choice, so neither appears in the command preview.
 	progressTmpl := "download:" + progressSentinel +
 		"|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
-
-	args := []string{
-		"--newline",
-		"--progress-template", progressTmpl,
-		"-o", outTmpl,
-	}
-
-	qArgs, err := a.qualityArgs(opts.Quality, opts.AudioFormat)
-	if err != nil {
-		return "", err
-	}
-	args = append(args, qArgs...)
-
+	args := []string{"--newline", "--progress-template", progressTmpl}
 	// Point yt-dlp at our managed ffmpeg if we downloaded one (no-op when the
-	// user skipped it or relies on a system install).
+	// user skipped it or relies on a system install). Placed here, ahead of the
+	// user's own arguments, so a --ffmpeg-location in Extra arguments still wins.
 	args = append(args, ffmpegLocationArgs()...)
+	args = append(args, userArgs...)
 
-	// Section download: build a "*START-END" spec for --download-sections.
-	if start != "" || end != "" {
-		if !a.FfmpegAvailable() {
-			return "", fmt.Errorf("downloading a section requires ffmpeg, which wasn't found on your system — install it (e.g. from ffmpeg.org) or clear the start/stop fields")
-		}
-
-		startSec, endSec := 0.0, -1.0
-		from, to := "0", "inf"
-		if start != "" {
-			if startSec, err = parseTimestamp(start); err != nil {
-				return "", fmt.Errorf("start time: %w", err)
-			}
-			from = start
-		}
-		if end != "" {
-			if endSec, err = parseTimestamp(end); err != nil {
-				return "", fmt.Errorf("stop time: %w", err)
-			}
-			to = end
-		}
-		if endSec >= 0 && endSec <= startSec {
-			return "", fmt.Errorf("stop time must be after start time")
-		}
-
-		args = append(args,
-			"--download-sections", fmt.Sprintf("*%s-%s", from, to),
-			// Re-encode just around the cut points so the clip starts and ends
-			// exactly where requested instead of snapping to the nearest keyframe.
-			"--force-keyframes-at-cuts",
-		)
-	}
-
-	// Subtitles: prefer manually-uploaded subs, fall back to auto-generated.
-	// --embed-subs muxes them into the container (requires ffmpeg for mp4).
-	if opts.Subtitles {
-		langs := strings.TrimSpace(opts.SubLangs)
-		if langs == "" {
-			langs = "en"
-		}
-		args = append(args,
-			"--write-subs",
-			"--write-auto-subs",
-			"--sub-langs", langs,
-			"--embed-subs",
-		)
-	}
-
-	// Embed metadata, thumbnail, and chapter markers into the output file.
-	// Thumbnail embedding requires ffmpeg; yt-dlp will skip it gracefully if
-	// ffmpeg isn't available.
-	if opts.EmbedMeta {
-		args = append(args,
-			"--embed-metadata",
-			"--embed-thumbnail",
-			"--embed-chapters",
-		)
-	}
-
-	// SponsorBlock: remove the selected segment categories. yt-dlp calls
-	// SponsorBlock's API and cuts the matched segments via ffmpeg.
-	if len(opts.SponsorBlock) > 0 {
-		args = append(args, "--sponsorblock-remove", strings.Join(opts.SponsorBlock, ","))
-	}
-
-	// Speed limit: cap the download rate so it doesn't saturate the connection.
-	// yt-dlp accepts a number with an optional unit suffix (e.g. "500K", "5M").
-	if rate := strings.TrimSpace(opts.RateLimit); rate != "" {
-		args = append(args, "--limit-rate", rate)
-	}
-
-	// Parallel fragments: fetch multiple fragments at once. A big speedup on
-	// sites that serve fragmented (DASH/HLS) media. 0 means leave yt-dlp at its
-	// default of 1 (sequential).
-	if opts.ConcurrentFragments > 0 {
-		args = append(args, "--concurrent-fragments", strconv.Itoa(opts.ConcurrentFragments))
-	}
-
-	// Naming flags from the filename-format builder (--replace-in-metadata,
-	// --restrict-filenames, --trim-filenames). Already tokenized by the frontend
-	// as discrete argv entries, so they're appended verbatim — no shell parsing.
-	// Placed before extra args so a power-user flag in Extra arguments wins.
-	if len(opts.NameArgs) > 0 {
-		args = append(args, opts.NameArgs...)
-	}
-
-	// Extra arguments: a raw escape hatch for power users who need a flag the UI
-	// doesn't expose. Parsed shell-style so quoted values survive, and appended
-	// last (just before the URL) so a user-supplied flag overrides the matching
-	// flag the UI set above where yt-dlp honours the later occurrence.
-	if extra := strings.TrimSpace(opts.ExtraArgs); extra != "" {
-		extraArgs, err := splitArgs(extra)
-		if err != nil {
-			return "", err
-		}
-		args = append(args, extraArgs...)
-	}
-
-	args = append(args, url)
 	cmd, err := ytDlpCmd(args...)
 	if err != nil {
 		return "", err
@@ -493,6 +310,11 @@ func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
 		return "", fmt.Errorf("could not start yt-dlp: %w", err)
 	}
 
+	// Publish the handle so CancelDownload (and app shutdown) can reach the
+	// process, and clear it again however this function returns.
+	a.setActiveDownload(cmd)
+	defer a.clearActiveDownload()
+
 	// Wait for the process in a goroutine and close the pipe writer when it
 	// exits, which lets the scanner below reach EOF and stop.
 	done := make(chan error, 1)
@@ -504,6 +326,11 @@ func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
 
 	var lastErrLine string
 	scanner := bufio.NewScanner(pr)
+	// yt-dlp occasionally prints a very long line (a format table, a dumped
+	// URL, a stack trace). The default 64 KiB limit would abort the scan, and
+	// with nothing left draining the pipe the process would block on write and
+	// cmd.Wait would never return — hanging the download with no way out.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
 		line := ansiRe.ReplaceAllString(scanner.Text(), "")
 		if strings.HasPrefix(line, progressSentinel+"|") {
@@ -517,12 +344,24 @@ func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
 			lastErrLine = line
 		}
 	}
+	scanErr := scanner.Err()
+	// Close the read half before waiting. On a normal finish this is a no-op
+	// (the writer already closed at EOF); after a scan error it unblocks the
+	// process so cmd.Wait can return instead of deadlocking.
+	pr.Close()
 
-	if werr := <-done; werr != nil {
+	werr := <-done
+	if a.wasCancelled() {
+		return "", fmt.Errorf("download cancelled")
+	}
+	if werr != nil {
 		if lastErrLine != "" {
 			return "", fmt.Errorf("%s", lastErrLine)
 		}
 		return "", fmt.Errorf("yt-dlp exited with an error: %w", werr)
+	}
+	if scanErr != nil {
+		return "", fmt.Errorf("lost track of yt-dlp's output: %w", scanErr)
 	}
 
 	// Make sure the bar finishes at 100%.
@@ -530,8 +369,52 @@ func (a *App) DownloadVideo(opts DownloadOptions) (string, error) {
 	return "Done", nil
 }
 
+// --- cancellation -------------------------------------------------------------
+
+// setActiveDownload records the running process so it can be cancelled, and
+// resets the cancelled flag for this run.
+func (a *App) setActiveDownload(cmd *exec.Cmd) {
+	a.dlMu.Lock()
+	defer a.dlMu.Unlock()
+	a.dlCmd = cmd
+	a.dlCancelled = false
+}
+
+// clearActiveDownload forgets the process once it has exited. The cancelled
+// flag is deliberately left set; setActiveDownload resets it when the next
+// download starts.
+func (a *App) clearActiveDownload() {
+	a.dlMu.Lock()
+	defer a.dlMu.Unlock()
+	a.dlCmd = nil
+}
+
+// wasCancelled reports whether the download that just ended was killed on
+// purpose rather than failing on its own.
+func (a *App) wasCancelled() bool {
+	a.dlMu.Lock()
+	defer a.dlMu.Unlock()
+	return a.dlCancelled
+}
+
+// CancelDownload stops the download in progress, killing yt-dlp and any ffmpeg
+// it spawned. Partial files are left where yt-dlp put them (its .part files are
+// resumable, so a re-run picks up rather than starting over). Doing nothing when
+// no download is running is not an error — the button may simply have been
+// clicked as the download finished. Bound to the frontend "Cancel" button.
+func (a *App) CancelDownload() error {
+	a.dlMu.Lock()
+	defer a.dlMu.Unlock()
+	if a.dlCmd == nil {
+		return nil
+	}
+	a.dlCancelled = true
+	killProcessTree(a.dlCmd)
+	return nil
+}
+
 // emitProgress parses one of our sentinel progress lines and forwards it to the
-// frontend. Line format: "__YTPGUI_PROGRESS__| 45.2%|1.20MiB/s|00:12".
+// frontend. Line format: "__YTDLP_GUI_PROGRESS__| 45.2%|1.20MiB/s|00:12".
 func (a *App) emitProgress(line string) {
 	parts := strings.Split(line, "|")
 	if len(parts) < 4 {

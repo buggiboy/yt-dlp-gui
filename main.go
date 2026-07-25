@@ -19,7 +19,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "ytpgui",
+		Title:  "yt-dlp-gui",
 		Width:  1024,
 		Height: 768,
 		AssetServer: &assetserver.Options{
@@ -29,6 +29,9 @@ func main() {
 		// and the CSS paints a semi-transparent dark gray on top.
 		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		OnStartup:        app.startup,
+		// Kills an in-flight download rather than orphaning the yt-dlp process
+		// when the window closes.
+		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
 		},

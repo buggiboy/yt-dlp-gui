@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import InfoTip from './InfoTip.svelte'
 
   let {
@@ -6,15 +7,45 @@
     onRateLimitChange,
     concurrentFragments,
     onConcurrentFragmentsChange,
+    ytDlpVersion,
+    checking,
+    updating,
+    updateStatus,
+    updateAvailable,
+    latestVersion,
+    changelogUrl,
+    busy,
+    onCheckForUpdate,
+    onUpdateYtDlp,
+    onOpenChangelog,
     onClose,
     onOpenDepsFolder,
+    onResetSettings,
   }: {
     rateLimit: string
     onRateLimitChange: (value: string) => void
     concurrentFragments: number
     onConcurrentFragmentsChange: (value: number) => void
+    ytDlpVersion: string
+    checking: boolean
+    updating: boolean
+    updateStatus: string
+    /** A check found a newer release that the user hasn't taken yet. */
+    updateAvailable: boolean
+    latestVersion: string
+    /** Release notes (or a compare view) for everything since the installed
+     *  version. Empty when there's nothing new to read about. */
+    changelogUrl: string
+    /** Another operation (a download or install) is running. Replacing the
+     *  zipapp while it's being executed fails outright on Windows, so the
+     *  update has to wait — checking is fine, it only talks to GitHub. */
+    busy: boolean
+    onCheckForUpdate: () => void
+    onUpdateYtDlp: () => void
+    onOpenChangelog: () => void
     onClose: () => void
     onOpenDepsFolder: () => void
+    onResetSettings: () => void
   } = $props()
 
   // Offered presets for parallel fragment downloads. 0 = off (yt-dlp's default
@@ -31,45 +62,86 @@
   const TABS = [
     { id: 'downloads', label: 'Downloads' },
     { id: 'deps', label: 'Dependencies' },
+    { id: 'general', label: 'General' },
   ] as const
 
   type TabId = (typeof TABS)[number]['id']
 
   let activeTab = $state<TabId>('downloads')
 
-  // --- Speed limit ---
-  // The limit is always expressed in MB/s. It's stored in yt-dlp's number+unit
-  // form with a fixed "M" suffix (e.g. "5M"); "" means unlimited. The field only
-  // accepts the numeric MB/s value — the unit is fixed in the UI.
+  // --- Reset ---
+  // Two-step rather than a confirmation dialog: a modal on top of a modal is
+  // worse than a button that asks once. Reverts on its own so a half-pressed
+  // reset doesn't stay armed.
+  let resetArmed = $state(false)
+  let resetDone = $state(false)
+  let disarmTimer: ReturnType<typeof setTimeout> | null = null
 
-  /** Extracts the numeric MB/s portion of a stored rate ("5M" → "5"). Returns ""
-   *  when the value is empty, so the field shows its placeholder. */
-  function rateToField(value: string): string {
-    const m = value.trim().match(/^([\d.]+)/)
-    return m ? m[1] : ''
+  function armReset(): void {
+    resetArmed = true
+    resetDone = false
+    if (disarmTimer !== null) clearTimeout(disarmTimer)
+    disarmTimer = setTimeout(() => (resetArmed = false), 5000)
   }
 
-  let speedField = $derived(rateToField(rateLimit))
+  function confirmReset(): void {
+    if (disarmTimer !== null) clearTimeout(disarmTimer)
+    disarmTimer = null
+    resetArmed = false
+    resetDone = true
+    onResetSettings()
+  }
 
-  /** Serializes the field's raw text back to a yt-dlp rate. Blank or non-positive
-   *  input means no limit. The unit is always MB ("M"). */
-  function setSpeed(raw: string): void {
-    const trimmed = raw.trim()
-    const n = Number(trimmed)
-    if (trimmed === '' || !Number.isFinite(n) || n <= 0) {
+  // --- Speed limit ---
+  // Stored in yt-dlp's number+unit form ("500K", "5M"); "" means unlimited.
+  // The UI splits that into a whole-number amount and a unit dropdown, which
+  // avoids decimals entirely — "500 KB/s" says what "0.5 MB/s" would, without
+  // asking a number field to cope with a half-typed "0.".
+
+  type RateUnit = 'K' | 'M'
+
+  const RATE_UNITS: { value: RateUnit; label: string }[] = [
+    { value: 'K', label: 'KB/s' },
+    { value: 'M', label: 'MB/s' },
+  ]
+
+  /** Splits a stored rate into its parts. Unknown or empty values fall back to
+   *  "no amount, MB/s", which shows the placeholder. */
+  function parseRate(value: string): { amount: number | null; unit: RateUnit } {
+    const m = value.trim().match(/^(\d+)\s*([KM])?/i)
+    if (!m) return { amount: null, unit: 'M' }
+    return {
+      amount: Number(m[1]),
+      unit: (m[2]?.toUpperCase() as RateUnit) ?? 'M',
+    }
+  }
+
+  // Local state, seeded once from the incoming value. The modal is created
+  // fresh each time it opens, so this always starts from the saved setting —
+  // and because the field isn't derived from the prop, a value round-tripping
+  // through the parent can't overwrite what's being typed. untrack makes that
+  // read-once intent explicit (and keeps the compiler from warning about it).
+  const initialRate = untrack(() => parseRate(rateLimit))
+  let amount = $state<number | null>(initialRate.amount)
+  let unit = $state<RateUnit>(initialRate.unit)
+
+  /** Pushes the current amount + unit up as a yt-dlp rate. A blank, zero, or
+   *  negative amount means no limit. */
+  function commitRate(): void {
+    if (amount === null || !Number.isFinite(amount) || amount <= 0) {
       onRateLimitChange('')
       return
     }
-    onRateLimitChange(`${n}M`)
+    onRateLimitChange(`${Math.floor(amount)}${unit}`)
   }
 </script>
 
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape') onClose() }} />
 
 <!-- Backdrop dismissal is a mouse convenience; Escape (handled above) is the
-     keyboard-accessible way to close, so the static-element interaction here is
-     intentional. -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+     keyboard-accessible way to close. role="presentation" already marks the
+     backdrop as decoration, so only the click-without-keydown warning needs
+     silencing here. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="backdrop" role="presentation" onclick={onClose}>
   <div
@@ -113,15 +185,24 @@
               id="speed-limit"
               class="speed-input"
               type="number"
-              inputmode="decimal"
-              min="0"
-              step="0.5"
+              inputmode="numeric"
+              min="1"
+              step="1"
               placeholder="No limit"
-              value={speedField}
-              oninput={(e) => setSpeed(e.currentTarget.value)}
-              aria-label="Maximum download speed in megabytes per second"
+              bind:value={amount}
+              oninput={commitRate}
+              aria-label="Maximum download speed"
             />
-            <span class="unit">MB/s</span>
+            <select
+              class="unit-select"
+              bind:value={unit}
+              onchange={commitRate}
+              aria-label="Speed limit unit"
+            >
+              {#each RATE_UNITS as u (u.value)}
+                <option value={u.value}>{u.label}</option>
+              {/each}
+            </select>
           </div>
           <p class="setting-hint">
             Caps the download rate so it doesn't saturate your connection.
@@ -168,6 +249,45 @@
           app.
         </p>
         <div class="row">
+          <span class="row-label">yt-dlp</span>
+          <span class="path">{ytDlpVersion || 'not installed'}</span>
+          {#if updateAvailable}
+            <button
+              class="primary"
+              onclick={onUpdateYtDlp}
+              disabled={updating || busy}
+              title={busy && !updating
+                ? 'Wait for the current download to finish'
+                : `Download yt-dlp ${latestVersion}`}
+            >
+              {updating ? 'Updating…' : `Update to ${latestVersion}`}
+            </button>
+          {:else}
+            <button
+              onclick={onCheckForUpdate}
+              disabled={checking || updating}
+              title="See whether a newer yt-dlp release is available"
+            >
+              {checking ? 'Checking…' : 'Check for updates'}
+            </button>
+          {/if}
+        </div>
+        {#if updateStatus}
+          <p class="row-status" role="status">
+            {updateStatus}
+            {#if changelogUrl}
+              <button class="changelog-link" onclick={onOpenChangelog}>
+                View changelog
+              </button>
+            {/if}
+          </p>
+        {/if}
+        <p class="setting-hint">
+          Video sites change constantly and yt-dlp ships fixes just as often —
+          if downloads have started failing, try updating first.
+        </p>
+
+        <div class="row">
           <span class="row-label">Dependencies folder</span>
           <span class="path">Python, yt-dlp &amp; ffmpeg</span>
           <button
@@ -176,6 +296,30 @@
           >
             Open
           </button>
+        </div>
+      {:else if activeTab === 'general'}
+        <h3 class="pane-title">General</h3>
+
+        <div class="setting">
+          <div class="field-head">
+            <span class="field-label">Reset Settings</span>
+          </div>
+          <div class="field-row">
+            {#if resetArmed}
+              <button class="danger" onclick={confirmReset}>
+                Click again to confirm
+              </button>
+              <button onclick={() => (resetArmed = false)}>Cancel</button>
+            {:else}
+              <button onclick={armReset}>Reset all settings</button>
+            {/if}
+          </div>
+          <p class="setting-hint">
+            Restores every saved setting to its default
+          </p>
+          {#if resetDone}
+            <p class="row-status" role="status">Settings restored to defaults.</p>
+          {/if}
         </div>
       {/if}
     </section>
@@ -335,9 +479,9 @@
     flex-shrink: 0;
   }
 
-  .unit {
-    font-size: var(--fs-base);
-    color: var(--text-dim);
+  .unit-select {
+    width: 6rem;
+    flex-shrink: 0;
   }
 
   .setting-hint {
@@ -369,5 +513,31 @@
     text-overflow: ellipsis;
     font-size: var(--fs-sm);
     color: var(--text-dim);
+  }
+
+  /* Result line under a row's button (e.g. the outcome of an update). */
+  .row-status {
+    margin: 0.1rem 0 0;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+  }
+
+  /* Text-style button: opts out of the global push-button look so the
+     changelog reads as a link sitting inside the status line. */
+  .changelog-link {
+    background: none;
+    border: none;
+    padding: 0;
+    margin-left: 0.4rem;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  .changelog-link:hover {
+    background: none;
+    color: var(--accent-strong);
   }
 </style>
